@@ -121,14 +121,19 @@ int sqlite3BtreeBeginTrans(Btree *p, int wrflag){
   BtShared *pBt = p->pBt;
   int rc;
 
-  rc = mdb_txn_begin(pBt->env, NULL, !wrflag, &txn);
+  if ((p->inTrans == TRANS_WRITE) ||
+	(p->inTrans == TRANS_READ && !wrflag))
+	return SQLITE_OK;
+
+  rc = mdb_txn_begin(pBt->env, NULL, wrflag ? 0 : MDB_RDONLY, &txn);
   if (rc == 0) {
-  	p->main_txn = txn;
-	p->curr_txn = txn;
-	if (wrflag)
+	if (wrflag) {
 	  p->inTrans = TRANS_WRITE;
-	else
+	} else {
 	  p->inTrans = TRANS_READ;
+	}
+	p->main_txn = txn;
+	p->curr_txn = txn;
   }
 
   return errmap(rc);
@@ -232,6 +237,8 @@ static int BtreeTableHandle(Btree *p, int iTable, MDB_dbi *dbi)
   char name[13];
   int rc;
 
+  if (!p->curr_txn->mt_dbs[MAIN_DBI].md_entries)
+	return SQLITE_EMPTY;
   sprintf(name, "Tab.%08x", iTable);
   rc = mdb_open(p->curr_txn, name, 0, dbi);
   return errmap(rc);
@@ -352,10 +359,13 @@ int sqlite3BtreeCommit(Btree *p){
 ** the write-transaction for this database file is to delete the journal.
 */
 int sqlite3BtreeCommitPhaseOne(Btree *p, const char *zMaster){
-  int rc;
-  rc = mdb_txn_commit(p->main_txn);
-  p->main_txn = NULL;
-  p->curr_txn = NULL;
+  int rc = 0;
+  if (p->main_txn) {
+    rc = mdb_txn_commit(p->main_txn);
+    p->main_txn = NULL;
+    p->curr_txn = NULL;
+	p->inTrans = TRANS_NONE;
+  }
   return errmap(rc);
 }
 
@@ -550,6 +560,7 @@ int sqlite3BtreeCursorSize(void){
 */
 void sqlite3BtreeCursorZero(BtCursor *p){
   p->pKeyInfo = NULL;
+  p->pBtree = NULL;
   p->cachedRowid = 0;
 }
 
@@ -742,6 +753,7 @@ const char *sqlite3BtreeGetJournalname(Btree *p){
 */
 void sqlite3BtreeGetMeta(Btree *p, int idx, u32 *pMeta){
   MDB_val key, data;
+  MDB_dbi dbi;
   int rc;
 
   assert(idx >= 0 && idx < NUMMETA);
@@ -750,11 +762,14 @@ void sqlite3BtreeGetMeta(Btree *p, int idx, u32 *pMeta){
     *pMeta = 0;
 	return;
   }
+  rc = mdb_open(p->curr_txn, NULL, 0, &dbi);
   key.mv_data = &idx;
   key.mv_size = sizeof(idx);
-  rc = mdb_get(p->curr_txn, MAIN_DBI, &key, &data);
+  rc = mdb_get(p->curr_txn, dbi, &key, &data);
   if (rc == 0)
     memcpy(pMeta, data.mv_data, sizeof(*pMeta));
+  else
+    *pMeta = 0;
 }
 
 /*
@@ -1200,6 +1215,8 @@ int sqlite3BtreeOpen(
 	}
 	if (pBt) {
 	  sqlite3_mutex_leave(mutexOpen);
+	  p->pNext - pBt->trees;
+	  pBt->trees = p;
 	  *ppBtree = p;
 	  return SQLITE_OK;
 	}
@@ -1224,6 +1241,9 @@ int sqlite3BtreeOpen(
 	  sqlite3_free(envpath);
 	  return errmap(rc);
 	}
+	mdb_env_set_maxdbs(pBt->env, 256);
+	mdb_env_set_maxreaders(pBt->env, 256);
+	mdb_env_set_mapsize(pBt->env, 256*1048576);
 	eflags = 0;
 	if (vfsFlags & SQLITE_OPEN_READONLY)
 	  eflags |= MDB_RDONLY;
@@ -1248,6 +1268,8 @@ int sqlite3BtreeOpen(
 	g_shared_btrees = pBt;
 	sqlite3_mutex_leave(mutexOpen);
 	p->pBt = pBt;
+	p->pNext - pBt->trees;
+	pBt->trees = p;
 	*ppBtree = p;
   }
   return SQLITE_OK;
@@ -1401,7 +1423,19 @@ int sqlite3BtreeSetCacheSize(Btree *p, int mxPage){
 */
 void sqlite3BtreeSetCachedRowid(BtCursor *pCur, sqlite3_int64 iRowid){
   BtShared *pBt;
+  BtCursor *pc;
+  MDB_cursor *mc, *m2;
+  Btree *p;
   pBt = pCur->pBtree->pBt;
+
+  mc = (MDB_cursor *)(pCur+1);
+  for (p=pBt->trees; p; p=p->pNext) {
+    for (pc=p->pCursor; pc; pc=pc->pNext) {
+	  m2 = (MDB_cursor *)(pc+1);
+	  if (m2->mc_dbi == mc->mc_dbi)
+	    pc->cachedRowid = iRowid;
+	}
+  }
 }
 
 /*
@@ -1494,6 +1528,7 @@ void sqlite3BtreeTripAllCursors(Btree *pBtree, int errCode){
 int sqlite3BtreeUpdateMeta(Btree *p, int idx, u32 iMeta){
   MDB_val key, data;
   BtShared *pBt;
+  MDB_dbi dbi;
   int rc;
 
   pBt = p->pBt;
@@ -1502,11 +1537,12 @@ int sqlite3BtreeUpdateMeta(Btree *p, int idx, u32 iMeta){
 
   assert(idx > 0 && idx < NUMMETA);
 
+  rc = mdb_open(p->curr_txn, NULL, 0, &dbi);
   key.mv_data = &idx;
   key.mv_size = sizeof(idx);
   data.mv_data = &iMeta;
   data.mv_size = sizeof(iMeta);
-  rc = mdb_put(p->curr_txn, MAIN_DBI, &key, &data, 0);
+  rc = mdb_put(p->curr_txn, dbi, &key, &data, 0);
   return errmap(rc);
 }
 

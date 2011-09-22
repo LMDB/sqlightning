@@ -83,6 +83,7 @@ struct Btree {
 */
 struct BtShared {
   sqlite3 *db;          /* Database connection currently using this Btree */
+  Btree *trees;			/* All Btree handles using this struct */
   MDB_env *env;
   u8 openFlags;         /* Flags to sqlite3BtreeOpen() */
   u8 inTransaction;     /* Transaction state */
