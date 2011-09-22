@@ -535,6 +535,7 @@ int sqlite3BtreeCursor(
     pCur->pNext = p->pCursor;
     p->pCursor = pCur;
     pCur->pBtree = p;
+    pCur->pKeyInfo = pKeyInfo;
   }
   LOG("rc=%d",rc);
   return rc;
@@ -1164,6 +1165,9 @@ int sqlite3BtreeMovetoUnpacked(
 	key[0].mv_size = sizeof(i64);
 	ret = mdb_cursor_get(mc, key, NULL, MDB_SET);
   } else {
+    key[0].mv_size = 1;
+	key[0].mv_data = NULL;
+	key[1].mv_size = 0;
 	key[1].mv_data = pUnKey;
     /* Put the rowID into the data, not the key */
 	if (pUnKey->nField > pCur->pKeyInfo->nField) {
@@ -1262,8 +1266,7 @@ int sqlite3BtreeOpen(
   if ((vfsFlags & SQLITE_OPEN_TRANSIENT_DB) || !zFilename || !zFilename[0] ||
 	!strcmp(zFilename, ":memory:")) {
 	istemp = 1;
-	if (!g_tmp_env)
-	  envpath = tempnam(NULL, "mdb");
+	envpath = tempnam(NULL, "mdb.");
   } else {
     char dirPathBuf[BT_MAX_PATH], *dirPathName = dirPathBuf;
 	sqlite3OsFullPathname(pVfs, zFilename, sizeof(dirPathBuf), dirPathName);
@@ -1314,7 +1317,6 @@ int sqlite3BtreeOpen(
 	  rc = SQLITE_NOMEM;
 	  goto done;
 	}
-  if (!istemp || !g_tmp_env) {
 	rc = mdb_env_create(&pBt->env);
 	if (rc) {
 	  if (istemp) {
@@ -1346,9 +1348,6 @@ int sqlite3BtreeOpen(
 	  rc = errmap(rc);
 	  goto done;
 	}
-  } else {
-    pBt->env = g_tmp_env;
-  }
 	pBt->db = db;
 	pBt->openFlags = flags;
 	pBt->inTransaction = TRANS_NONE;
@@ -1358,8 +1357,6 @@ int sqlite3BtreeOpen(
 	pBt->nRef = 1;
 	pBt->pWriter = NULL;
 	if (istemp) {
-	  if (!g_tmp_env)
-	    g_tmp_env = pBt->env;
 	} else {
 	  pBt->pNext = g_shared_btrees;
 	  g_shared_btrees = pBt;
