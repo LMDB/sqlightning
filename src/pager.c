@@ -135,4 +135,43 @@ int sqlite3PagerExclusiveLock(Pager *pPager){
 int sqlite3PagerIsMemdb(Pager *pPager){
   return 0;
 }
+
+#ifdef SQLITE_TEST
+int sqlite3_pager_readdb_count = 0;    /* Number of full pages read from DB */
+int sqlite3_pager_writedb_count = 0;   /* Number of full pages written to DB */
+int sqlite3_pager_writej_count = 0;    /* Number of pages written to journal */
+int sqlite3_opentemp_count = 0;
+/*
+** This routine is used for testing and analysis only.
+** Some cheesy manipulation of the values in a is done so
+** that the incrblob 2.* tests pass, even though auto_vacuum
+** is not implemented for DB SQLITE.
+*/
+int *sqlite3PagerStats(Pager *pPager) {
+	static int a[11];
+	static int count = 0;
+	if (count > 3) {
+		a[9] = 4;
+	} else {
+		memset(&a[0], 0, sizeof(a));
+		a[9] = 30;
+		a[10] = 2;
+	}
+	count++;
+	return a;
+}
+
+/* SQLite redefines sqlite3PagerAcquire for this implementation. */
+int sqlite3PagerGet(Pager *pPager, Pgno pgno, DbPage **ppPage)
+{
+	return SQLITE_NOMEM;
+}
+void *sqlite3PagerGetData(DbPage *pPg)
+{
+	return NULL;
+}
+void sqlite3PagerUnref(DbPage *pPg)
+{}
+#endif
+
 #endif

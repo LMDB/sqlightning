@@ -112,8 +112,7 @@ i64 sqlite3PagerJournalSizeLimit(Pager *, i64);
 sqlite3_backup **sqlite3PagerBackupPtr(Pager*);
 
 /* Functions used to obtain and release page references. */ 
-int sqlite3PagerAcquire(Pager *pPager, Pgno pgno, DbPage **ppPage, int clrFlag);
-#define sqlite3PagerGet(A,B,C) sqlite3PagerAcquire(A,B,C,0)
+int sqlite3PagerGet(Pager *pPager, Pgno pgno, DbPage **ppPage);
 DbPage *sqlite3PagerLookup(Pager *pPager, Pgno pgno);
 void sqlite3PagerRef(DbPage*);
 void sqlite3PagerUnref(DbPage*);

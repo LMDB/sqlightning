@@ -70,7 +70,8 @@ EXE =
 #    will run on the target platform.  This is usually the same
 #    as BCC, unless you are cross-compiling.
 #
-TCC = gcc -O6
+OPT = -O6
+TCC = gcc $(OPT)
 #TCC = gcc -g -O0 -Wall
 #TCC = gcc -g -O0 -Wall -fprofile-arcs -ftest-coverage
 #TCC = /opt/mingw/bin/i386-mingw32-gcc -O6

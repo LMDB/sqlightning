@@ -411,10 +411,10 @@ static int btree_payload_size(
   /* The cursor may be in "require-seek" state. If this is the case, the
   ** call to BtreeDataSize() will fix it. */
   sqlite3BtreeDataSize(pCur, (u32*)&n2);
-  if( pCur->apPage[pCur->iPage]->intKey ){
-    n1 = 0;
-  }else{
+  if( pCur->pKeyInfo ){
     sqlite3BtreeKeySize(pCur, (i64*)&n1);
+  }else{
+    n1 = 0;
   }
   sqlite3BtreeLeave(pCur->pBtree);
   sqlite3_snprintf(sizeof(zBuf),zBuf, "%d", (int)(n1+n2));

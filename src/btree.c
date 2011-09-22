@@ -3,8 +3,28 @@
 #include "mdb.c"
 #include "midl.c"
 
+/*
+ * Globals are protected by the static "open" mutex (SQLITE_MUTEX_STATIC_OPEN).
+ */
+
+/* The head of the linked list of shared Btree objects */
+struct BtShared *g_shared_btrees = NULL;
+
+/* The environment handle used for temporary environments (NULL or open). */
+MDB_env *g_tmp_env;
+
 /* rowid is an 8 byte int */
 #define ROWIDMAXSIZE	10
+
+#ifndef SQLITE_DEFAULT_FILE_PERMISSIONS
+#define SQLITE_DEFAULT_FILE_PERMISSIONS	0644
+#endif
+
+#ifndef SQLITE_DEFAULT_PROXYDIR_PERMISSIONS
+#define SQLITE_DEFAULT_PROXYDIR_PERMISSIONS	0755
+#endif
+
+#define	BT_MAX_PATH	512
 
 static int errmap(int err)
 {
@@ -151,15 +171,20 @@ int sqlite3BtreePutData(BtCursor *pCsr, u32 offset, u32 amt, void *z){
 
   if (F_ISSET(node->mn_flags, F_BIGDATA)) {
     MDB_val ndata;
-	ndata.mv_data = sqlite3_malloc(data.mv_size);
-	if(!ndata.mv_data)
-	  return SQLITE_NOMEM;
-	memcpy(ndata.mv_data, data.mv_data, data.mv_size);
-	memcpy((char *)ndata.mv_data+offset, z, amt);
-	rc = mdb_cursor_put(mc, NULL, &ndata, MDB_CURRENT);
-	sqlite3_free(ndata.mv_data);
-	if (rc)
-	  return errmap(rc);
+	MDB_page *mp = (MDB_page *)((char *)data.mv_data - PAGEHDRSZ);
+	if (!mp->mp_flags & P_DIRTY) {
+		ndata.mv_data = sqlite3_malloc(data.mv_size);
+		if(!ndata.mv_data)
+		  return SQLITE_NOMEM;
+		memcpy(ndata.mv_data, data.mv_data, data.mv_size);
+		memcpy((char *)ndata.mv_data+offset, z, amt);
+		rc = mdb_cursor_put(mc, NULL, &ndata, MDB_CURRENT);
+		sqlite3_free(ndata.mv_data);
+		if (rc)
+		  return errmap(rc);
+	} else {
+		memcpy((char *)data.mv_data+offset, z, amt);
+	}
   } else {
 	memcpy(NODEDATA(node)+offset, z, amt);
   }
@@ -1141,6 +1166,91 @@ int sqlite3BtreeOpen(
   int flags,              /* Options */
   int vfsFlags            /* Flags passed through to sqlite3_vfs.xOpen() */
 ){
+  Btree *p;
+  BtShared *pBt;
+  sqlite3_mutex *mutexOpen = NULL;
+  int eflags, rc;
+
+  if ((p = (Btree *)sqlite3_malloc(sizeof(Btree))) == NULL)
+    return SQLITE_NOMEM;
+  p->db = db;
+  p->pCursor = NULL;
+  p->main_txn = NULL;
+  p->curr_txn = NULL;
+  p->inTrans = TRANS_NONE;
+  /* Transient and in-memory are all the same, use /tmp */
+  if ((vfsFlags & SQLITE_OPEN_TRANSIENT_DB) || !zFilename || !zFilename[0] ||
+	!strcmp(zFilename, ":memory:")) {
+	return SQLITE_ERROR;
+  } else {
+    char dirPathBuf[BT_MAX_PATH], *dirPathName = dirPathBuf;
+	char *envpath;
+	sqlite3OsFullPathname(pVfs, zFilename, sizeof(dirPathBuf), dirPathName);
+	envpath = sqlite3_malloc(strlen(dirPathName)+sizeof("-mdb"));
+	sprintf(envpath, "%s-mdb", dirPathName);
+    mutexOpen = sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_OPEN);
+	sqlite3_mutex_enter(mutexOpen);
+	for (pBt = g_shared_btrees; pBt; pBt = pBt->pNext) {
+		if (pBt->env && !strcmp(pBt->env->me_path, envpath)) {
+			p->pBt = pBt;
+			pBt->nRef++;
+			sqlite3_free(envpath);
+			break;
+		}
+	}
+	if (pBt) {
+	  sqlite3_mutex_leave(mutexOpen);
+	  *ppBtree = p;
+	  return SQLITE_OK;
+	}
+	rc = mkdir(envpath, SQLITE_DEFAULT_PROXYDIR_PERMISSIONS);
+	if (rc) {
+	  rc = errno;
+	  if (rc != EEXIST) {
+	    sqlite3_mutex_leave(mutexOpen);
+	    sqlite3_free(envpath);
+	    return errmap(rc);
+	  }
+	}
+	pBt = sqlite3_malloc(sizeof(BtShared));
+	if (!pBt) {
+	  sqlite3_mutex_leave(mutexOpen);
+	  sqlite3_free(envpath);
+	  return SQLITE_NOMEM;
+	}
+	rc = mdb_env_create(&pBt->env);
+	if (rc) {
+	  sqlite3_mutex_leave(mutexOpen);
+	  sqlite3_free(envpath);
+	  return errmap(rc);
+	}
+	eflags = 0;
+	if (vfsFlags & SQLITE_OPEN_READONLY)
+	  eflags |= MDB_RDONLY;
+	if (vfsFlags & (SQLITE_OPEN_DELETEONCLOSE|SQLITE_OPEN_TEMP_DB|
+	  SQLITE_OPEN_TRANSIENT_DB))
+	  eflags |= MDB_NOSYNC;
+	rc = mdb_env_open(pBt->env, envpath, eflags, SQLITE_DEFAULT_FILE_PERMISSIONS);
+	sqlite3_free(envpath);
+	if (rc) {
+	  sqlite3_mutex_leave(mutexOpen);
+	  return errmap(rc);
+	}
+	pBt->db = db;
+	pBt->openFlags = flags;
+	pBt->inTransaction = TRANS_NONE;
+	pBt->nTransaction = 0;
+	pBt->pSchema = NULL;
+	pBt->xFreeSchema = NULL;
+	pBt->nRef = 1;
+	pBt->pWriter = NULL;
+	pBt->pNext = g_shared_btrees;
+	g_shared_btrees = pBt;
+	sqlite3_mutex_leave(mutexOpen);
+	p->pBt = pBt;
+	*ppBtree = p;
+  }
+  return SQLITE_OK;
 }
 
 /*

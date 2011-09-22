@@ -29,7 +29,6 @@ struct Btree {
   MDB_txn *main_txn;
   MDB_txn *curr_txn;
   u8 inTrans;        /* TRANS_NONE, TRANS_READ or TRANS_WRITE */
-  u8 sharable;       /* True if we can share pBt with another db */
   u8 locked;         /* True if db currently has pBt locked */
   int wantToLock;    /* Number of nested calls to sqlite3BtreeEnter() */
   Btree *pNext;      /* List of other sharable Btrees from the same db */
@@ -95,6 +94,9 @@ struct BtShared {
   int nRef;             /* Number of references to this structure */
   BtShared *pNext;      /* Next on a list of sharable BtShared structs */
   Btree *pWriter;       /* Btree with currently open write transaction */
+#ifdef SQLITE_TEST
+  void *pPager;			/* dummy */
+#endif
 #endif
 };
 
