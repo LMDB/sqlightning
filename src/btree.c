@@ -3,6 +3,10 @@
 #include "mdb.c"
 #include "midl.c"
 
+#if 1
+#define LOG(fmt,...)   sqlite3DebugPrintf("%s:%d " fmt "\n", __func__, __LINE__, __VA_ARGS__)
+#endif
+
 /*
  * Globals are protected by the static "open" mutex (SQLITE_MUTEX_STATIC_OPEN).
  */
@@ -92,6 +96,7 @@ int sqlite3BtreeBeginStmt(Btree *p, int iStatement){
   if (rc == 0)
   	p->curr_txn = txn;
   sqlite3BtreeLeave(p);
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -119,11 +124,11 @@ int sqlite3BtreeBeginStmt(Btree *p, int iStatement){
 int sqlite3BtreeBeginTrans(Btree *p, int wrflag){
   MDB_txn *txn;
   BtShared *pBt = p->pBt;
-  int rc;
+  int rc = SQLITE_OK;
 
   if ((p->inTrans == TRANS_WRITE) ||
 	(p->inTrans == TRANS_READ && !wrflag))
-	return SQLITE_OK;
+	goto done;
 
   rc = mdb_txn_begin(pBt->env, NULL, wrflag ? 0 : MDB_RDONLY, &txn);
   if (rc == 0) {
@@ -136,6 +141,8 @@ int sqlite3BtreeBeginTrans(Btree *p, int wrflag){
 	p->curr_txn = txn;
   }
 
+done:
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -202,6 +209,7 @@ int sqlite3BtreePutData(BtCursor *pCsr, u32 offset, u32 amt, void *z){
 ** for incremental blob IO only.
 */
 void sqlite3BtreeCacheOverflow(BtCursor *pCur){
+  LOG("done",0);
 }
 #endif
 
@@ -220,6 +228,7 @@ int sqlite3BtreeCheckpoint(Btree *p, int eMode, int *pnLog, int *pnCkpt){
     BtShared *pBt = p->pBt;
 	rc = mdb_env_sync(pBt->env, 1);
   }
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 #endif
@@ -230,6 +239,7 @@ int sqlite3BtreeCheckpoint(Btree *p, int eMode, int *pnLog, int *pnCkpt){
 void sqlite3BtreeClearCursor(BtCursor *pCur){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
   mc->mc_flags &= ~C_INITIALIZED;
+  LOG("done",0);
 }
 
 static int BtreeTableHandle(Btree *p, int iTable, MDB_dbi *dbi)
@@ -267,10 +277,12 @@ int sqlite3BtreeClearTable(Btree *p, int iTable, int *pnChange){
   }
   rc = BtreeTableHandle(p, iTable, &dbi);
   if (rc)
-    return rc;
+    goto done;
   rc = mdb_drop(p->curr_txn, dbi, 0);
   if (rc == 0 && pnChange)
   	*pnChange += ents;
+done:
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -304,6 +316,7 @@ int sqlite3BtreeClose(Btree *p){
   }
   sqlite3_mutex_leave(mutexOpen);
   sqlite3_free(p);
+  LOG("done",0);
   return SQLITE_OK;
 }
 
@@ -317,6 +330,9 @@ int sqlite3BtreeCloseCursor(BtCursor *pCur){
 	while (*prev != pCur) prev = &((*prev)->pNext);
 	*prev = pCur->pNext;
   }
+  sqlite3BtreeClearCursor(pCur);
+  LOG("done",0);
+  return SQLITE_OK;
 }
 
 /*
@@ -326,9 +342,9 @@ int sqlite3BtreeCommit(Btree *p){
   int rc;
 
   rc = sqlite3BtreeCommitPhaseOne(p, NULL);
-  if (rc)
-    return rc;
-  rc = sqlite3BtreeCommitPhaseTwo(p, 0);
+  if (rc == 0)
+    rc = sqlite3BtreeCommitPhaseTwo(p, 0);
+  LOG("rc=%d",rc);
   return rc;
 }
 
@@ -366,6 +382,7 @@ int sqlite3BtreeCommitPhaseOne(Btree *p, const char *zMaster){
     p->curr_txn = NULL;
 	p->inTrans = TRANS_NONE;
   }
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -396,6 +413,7 @@ int sqlite3BtreeCommitPhaseOne(Btree *p, const char *zMaster){
 ** are no active cursors, it also releases the read lock.
 */
 int sqlite3BtreeCommitPhaseTwo(Btree *p, int bCleanup){
+  LOG("done",0);
   return SQLITE_OK;
 }
 
@@ -411,6 +429,7 @@ int sqlite3BtreeCommitPhaseTwo(Btree *p, int bCleanup){
 int sqlite3BtreeCount(BtCursor *pCur, i64 *pnEntry){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
   *pnEntry = mc->mc_db->md_entries;
+  LOG("done",0);
   return SQLITE_OK;
 }
 #endif
@@ -469,6 +488,7 @@ int sqlite3BtreeCreateTable(Btree *p, int *piTable, int flags){
 	  mdb_set_compare(p->main_txn, dbi, BtreeCompare);
 	}
   }
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -510,14 +530,14 @@ int sqlite3BtreeCursor(
   int rc;
 
   rc = BtreeTableHandle(p, iTable, &dbi);
-  if (rc)
-    return rc;
-
-  mdb_cursor_init(mc, p->curr_txn, dbi, (MDB_xcursor *)(mc+1));
-  pCur->pNext = p->pCursor;
-  p->pCursor = pCur;
-  pCur->pBtree = p;
-  return SQLITE_OK;
+  if (rc == 0) {
+    mdb_cursor_init(mc, p->curr_txn, dbi, (MDB_xcursor *)(mc+1));
+    pCur->pNext = p->pCursor;
+    p->pCursor = pCur;
+    pCur->pBtree = p;
+  }
+  LOG("rc=%d",rc);
+  return rc;
 }
 
 /*
@@ -535,6 +555,7 @@ int sqlite3BtreeCursorHasMoved(BtCursor *pCur, int *pHasMoved){
   }else{
     *pHasMoved = 0;
   }
+  LOG("rc=0, *pHasMoved=%d",*pHasMoved);
   return SQLITE_OK;
 }
 
@@ -547,6 +568,7 @@ int sqlite3BtreeCursorHasMoved(BtCursor *pCur, int *pHasMoved){
 ** this routine.
 */
 int sqlite3BtreeCursorSize(void){
+  LOG("done",0);
   return ROUND8(sizeof(BtCursor) + sizeof(MDB_cursor) + sizeof(MDB_xcursor));
 }
 
@@ -562,6 +584,7 @@ void sqlite3BtreeCursorZero(BtCursor *p){
   p->pKeyInfo = NULL;
   p->pBtree = NULL;
   p->cachedRowid = 0;
+  LOG("done",0);
 }
 
 /*
@@ -577,14 +600,16 @@ int sqlite3BtreeData(BtCursor *pCur, u32 offset, u32 amt, void *pBuf){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
   MDB_val data;
   MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
+  int rc = SQLITE_OK;
   
   mdb_node_read(mc->mc_txn, node, &data);
   if (offset+amt <= data.mv_size) {
     memcpy(pBuf, (char *)data.mv_data+offset, amt);
-	return SQLITE_OK;
   } else {
-    return SQLITE_CORRUPT_BKPT;
+    rc = SQLITE_CORRUPT_BKPT;
   }
+  LOG("rc=%d",rc);
+  return rc;
 }
 
 /*
@@ -597,6 +622,7 @@ int sqlite3BtreeData(BtCursor *pCur, u32 offset, u32 amt, void *pBuf){
 */
 const void *sqlite3BtreeKeyFetch(BtCursor *pCur, int *pAmt){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
+  LOG("done",0);
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
 	*pAmt = NODEKSZ(node);
@@ -608,6 +634,7 @@ const void *sqlite3BtreeKeyFetch(BtCursor *pCur, int *pAmt){
 const void *sqlite3BtreeDataFetch(BtCursor *pCur, int *pAmt){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
   MDB_val data;
+  LOG("done",0);
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
     mdb_node_read(mc->mc_txn, node, &data);
@@ -638,6 +665,7 @@ int sqlite3BtreeDataSize(BtCursor *pCur, u32 *pSize){
     mdb_node_read(mc->mc_txn, node, &data);
 	*pSize = data.mv_size;
   }
+  LOG("done",0);
   return SQLITE_OK;
 }
 
@@ -649,6 +677,7 @@ int sqlite3BtreeDelete(BtCursor *pCur){
   int rc;
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
   rc = mdb_cursor_del(mc, 0);
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -665,9 +694,10 @@ int sqlite3BtreeDropTable(Btree *p, int iTable, int *piMoved){
   MDB_dbi dbi;
   *piMoved = 0;
   rc = BtreeTableHandle(p, iTable, &dbi);
-  if (rc)
-    return rc;
-  rc = mdb_drop(p->curr_txn, dbi, 1);
+  if (rc == 0)
+    rc = mdb_drop(p->curr_txn, dbi, 1);
+
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -680,7 +710,9 @@ int sqlite3BtreeDropTable(Btree *p, int iTable, int *piMoved){
 */
 int sqlite3BtreeEof(BtCursor *pCur){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
-  return (mc->mc_flags & C_EOF) != 0;
+  int ret = (mc->mc_flags & C_EOF) != 0;
+  LOG("ret=%d",ret);
+  return ret;
 }
 
 /* Move the cursor to the first entry in the table.  Return SQLITE_OK
@@ -695,6 +727,7 @@ int sqlite3BtreeFirst(BtCursor *pCur, int *pRes){
     mdb_cursor_get(mc, NULL, NULL, MDB_FIRST);
 	*pRes = 0;
   }
+  LOG("rc=0, *pRes=%d",*pRes);
   return SQLITE_OK;
 }
 
@@ -703,6 +736,7 @@ int sqlite3BtreeFirst(BtCursor *pCur, int *pRes){
 ** enabled 1 is returned. Otherwise 0.
 */
 int sqlite3BtreeGetAutoVacuum(Btree *p){
+  LOG("done",0);
   return 0;
 }
 
@@ -713,6 +747,7 @@ int sqlite3BtreeGetAutoVacuum(Btree *p){
 ** zero is returned.
 */
 sqlite3_int64 sqlite3BtreeGetCachedRowid(BtCursor *pCur){
+  LOG("done",0);
   return pCur->cachedRowid;
 }
 
@@ -723,6 +758,7 @@ sqlite3_int64 sqlite3BtreeGetCachedRowid(BtCursor *pCur){
 ** open so it is safe to access without the BtShared mutex.
 */
 const char *sqlite3BtreeGetFilename(Btree *p){
+  LOG("done",0);
   return p->pBt->env->me_path;
 }
 
@@ -735,7 +771,8 @@ const char *sqlite3BtreeGetFilename(Btree *p){
 ** open so it is safe to access without the BtShared mutex.
 */
 const char *sqlite3BtreeGetJournalname(Btree *p){
-  return NULL;
+  LOG("done",0);
+  return "null";
 }
 
 /*
@@ -758,6 +795,7 @@ void sqlite3BtreeGetMeta(Btree *p, int idx, u32 *pMeta){
 
   assert(idx >= 0 && idx < NUMMETA);
 
+  LOG("done",0);
   if (!idx) {
     *pMeta = 0;
 	return;
@@ -776,6 +814,7 @@ void sqlite3BtreeGetMeta(Btree *p, int idx, u32 *pMeta){
 ** Return the currently defined page size
 */
 int sqlite3BtreeGetPageSize(Btree *p){
+  LOG("done",0);
   return p->pBt->env->me_psize;
 }
 
@@ -786,6 +825,7 @@ int sqlite3BtreeGetPageSize(Btree *p){
 ** sometimes used by extensions.
 */
 int sqlite3BtreeGetReserve(Btree *p){
+  LOG("done",0);
   return 0;
 }
 
@@ -796,6 +836,7 @@ int sqlite3BtreeGetReserve(Btree *p){
 */
 int sqlite3BtreeMaxPageCount(Btree *p, int mxPage){
   int n;
+  LOG("done",0);
   if (mxPage > 0)
     mdb_env_set_mapsize(p->pBt->env, mxPage * p->pBt->env->me_psize);
   return p->pBt->env->me_maxpg;
@@ -807,6 +848,7 @@ int sqlite3BtreeMaxPageCount(Btree *p, int mxPage){
 ** setting after the change.
 */
 int sqlite3BtreeSecureDelete(Btree *p, int newFlag){
+  LOG("done",0);
   return 0;
 }
 #endif /* !defined(SQLITE_OMIT_PAGER_PRAGMAS) || !defined(SQLITE_OMIT_VACUUM) */
@@ -818,6 +860,7 @@ int sqlite3BtreeSecureDelete(Btree *p, int newFlag){
 ** determined by the SQLITE_DEFAULT_AUTOVACUUM macro.
 */
 int sqlite3BtreeSetAutoVacuum(Btree *p, int autoVacuum){
+  LOG("done",0);
   return SQLITE_READONLY;
 }
 
@@ -831,6 +874,7 @@ int sqlite3BtreeSetAutoVacuum(Btree *p, int autoVacuum){
 ** SQLITE_OK is returned. Otherwise an SQLite error code. 
 */
 int sqlite3BtreeIncrVacuum(Btree *p){
+  LOG("done",0);
   return SQLITE_DONE;
 }
 #endif
@@ -914,11 +958,12 @@ int sqlite3BtreeInsert(
   rc = mdb_cursor_put(mc, key, &data, flag);
   if (p)
     sqlite3VdbeDeleteUnpackedRecord(p);
-  else if (nZero) {
+  else if (nZero && rc == 0) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
 	mdb_node_read(mc->mc_txn, node, &data);
 	memset((char *)data.mv_data+nData, 0, nZero);
   }
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -943,6 +988,7 @@ char *sqlite3BtreeIntegrityCheck(
   int mxErr,    /* Stop reporting errors after this many */
   int *pnErr    /* Write number of errors seen to this variable */
 ){
+  LOG("done",0);
   *pnErr = 0;
   return NULL;
 }
@@ -952,17 +998,22 @@ char *sqlite3BtreeIntegrityCheck(
 ** Return non-zero if a transaction is active.
 */
 int sqlite3BtreeIsInTrans(Btree *p){
-  return (p && (p->inTrans==TRANS_WRITE));
+  int rc = (p && (p->inTrans==TRANS_WRITE));
+  LOG("rc=%d",rc);
+  return rc;
 }
 
 /*
 ** Return non-zero if a read (or write) transaction is active.
 */
 int sqlite3BtreeIsInReadTrans(Btree *p){
-  return (p && p->inTrans!=TRANS_NONE);
+  int rc = (p && p->inTrans!=TRANS_NONE);
+  LOG("rc=%d",rc);
+  return rc;
 }
 
 int sqlite3BtreeIsInBackup(Btree *p){
+  LOG("rc=0",0);
   return 0;
 }
 
@@ -980,16 +1031,18 @@ int sqlite3BtreeIsInBackup(Btree *p){
 */
 int sqlite3BtreeKey(BtCursor *pCur, u32 offset, u32 amt, void *pBuf){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
+  int rc = SQLITE_ERROR;
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
 	if (offset+amt <= NODEKSZ(node)) {
       memcpy(pBuf, (char *)NODEKEY(node)+offset, amt);
-	  return SQLITE_OK;
+	  rc = SQLITE_OK;
     } else {
-      return SQLITE_CORRUPT_BKPT;
+      rc = SQLITE_CORRUPT_BKPT;
     }
   }
-  return SQLITE_ERROR;
+  LOG("rc=%d",rc);
+  return rc;
 }
 
 /*
@@ -1014,6 +1067,7 @@ int sqlite3BtreeKeySize(BtCursor *pCur, i64 *pSize){
 	  *pSize = NODEKSZ(node) + NODEDSZ(node);
 	}
   }
+  LOG("done",0);
   return SQLITE_OK;
 }
 
@@ -1030,6 +1084,7 @@ int sqlite3BtreeLast(BtCursor *pCur, int *pRes){
     mdb_cursor_get(mc, &key, &data, MDB_LAST);
 	*pRes = 0;
   }
+  LOG("rc=0, *pRes=%d",*pRes);
   return SQLITE_OK;
 }
 
@@ -1038,6 +1093,7 @@ int sqlite3BtreeLast(BtCursor *pCur, int *pRes){
 ** error, return ((unsigned int)-1).
 */
 u32 sqlite3BtreeLastPage(Btree *p){
+  LOG("done",0);
   return p->pBt->env->me_metas[p->curr_txn->mt_toggle]->mm_last_pg;
 }
 
@@ -1048,6 +1104,7 @@ u32 sqlite3BtreeLastPage(Btree *p){
 ** if it is false.
 */
 int sqlite3BtreeLockTable(Btree *p, int iTab, u8 isWriteLock){
+  LOG("rc=0",0);
   return SQLITE_OK;
 }
 #endif
@@ -1097,7 +1154,9 @@ int sqlite3BtreeMovetoUnpacked(
 
   if (!mc->mc_db->md_entries) {
     *pRes = res;
-	return SQLITE_NOTFOUND;
+	mc->mc_flags &= ~C_INITIALIZED;
+	ret = 0;
+	goto done;
   }
 
   if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
@@ -1128,6 +1187,8 @@ int sqlite3BtreeMovetoUnpacked(
   }
   res = ret ? 1 : 0;
   *pRes = res;
+done:
+  LOG("rc=%d, *pRes=%d", ret, res);
   return errmap(ret);
 }
 
@@ -1143,9 +1204,10 @@ int sqlite3BtreeNext(BtCursor *pCur, int *pRes){
   if (mc->mc_db->md_root == P_INVALID)
     *pRes = 1;
   else {
-    mdb_cursor_get(mc, &key, &data, MDB_PREV);
+    mdb_cursor_get(mc, &key, &data, MDB_NEXT);
 	*pRes = 0;
   }
+  LOG("rc=0, *pRes=%d",*pRes);
   return SQLITE_OK;
 }
 
@@ -1184,11 +1246,13 @@ int sqlite3BtreeOpen(
   Btree *p;
   BtShared *pBt;
   sqlite3_mutex *mutexOpen = NULL;
-  int eflags, rc, istemp = 0;
+  int eflags, rc = SQLITE_OK, istemp = 0;
   char *envpath = NULL;
 
-  if ((p = (Btree *)sqlite3_malloc(sizeof(Btree))) == NULL)
-    return SQLITE_NOMEM;
+  if ((p = (Btree *)sqlite3_malloc(sizeof(Btree))) == NULL) {
+    rc = SQLITE_NOMEM;
+	goto done;
+  }
   p->db = db;
   p->pCursor = NULL;
   p->main_txn = NULL;
@@ -1220,7 +1284,7 @@ int sqlite3BtreeOpen(
 	  p->pNext - pBt->trees;
 	  pBt->trees = p;
 	  *ppBtree = p;
-	  return SQLITE_OK;
+	  goto done;
 	}
   }
   if (envpath) {
@@ -1234,7 +1298,8 @@ int sqlite3BtreeOpen(
 	      sqlite3_mutex_leave(mutexOpen);
 	      sqlite3_free(envpath);
 		}
-	    return errmap(rc);
+	    rc = errmap(rc);
+		goto done;
 	  }
 	}
   }
@@ -1246,7 +1311,8 @@ int sqlite3BtreeOpen(
 	    sqlite3_mutex_leave(mutexOpen);
 	    sqlite3_free(envpath);
 	  }
-	  return SQLITE_NOMEM;
+	  rc = SQLITE_NOMEM;
+	  goto done;
 	}
   if (!istemp || !g_tmp_env) {
 	rc = mdb_env_create(&pBt->env);
@@ -1257,7 +1323,8 @@ int sqlite3BtreeOpen(
 	    sqlite3_mutex_leave(mutexOpen);
 	    sqlite3_free(envpath);
 	  }
-	  return errmap(rc);
+	  rc = errmap(rc);
+	  goto done;
 	}
 	mdb_env_set_maxdbs(pBt->env, 256);
 	mdb_env_set_maxreaders(pBt->env, 256);
@@ -1276,7 +1343,8 @@ int sqlite3BtreeOpen(
 	if (rc) {
 	  if (istemp)
 	    sqlite3_mutex_leave(mutexOpen);
-	  return errmap(rc);
+	  rc = errmap(rc);
+	  goto done;
 	}
   } else {
     pBt->env = g_tmp_env;
@@ -1302,7 +1370,9 @@ int sqlite3BtreeOpen(
 	p->pBt = pBt;
 	*ppBtree = p;
 
-  return SQLITE_OK;
+done:
+  LOG("rc=%d",rc);
+  return rc;;
 }
 
 /*
@@ -1310,6 +1380,7 @@ int sqlite3BtreeOpen(
 ** testing and debugging only.
 */
 Pager *sqlite3BtreePager(Btree *p){
+  LOG("done",0);
   return (Pager *)p;
 }
 
@@ -1328,6 +1399,7 @@ int sqlite3BtreePrevious(BtCursor *pCur, int *pRes){
     mdb_cursor_get(mc, &key, &data, MDB_PREV);
 	*pRes = 0;
   }
+  LOG("done",0);
   return SQLITE_OK;
 }
 
@@ -1338,6 +1410,7 @@ int sqlite3BtreePrevious(BtCursor *pCur, int *pRes){
 ** in an error.
 */
 int sqlite3BtreeRollback(Btree *p){
+  LOG("done",0);
   return sqlite3BtreeSavepoint(p, SAVEPOINT_ROLLBACK, -1);
 }
 
@@ -1380,6 +1453,7 @@ int sqlite3BtreeSavepoint(Btree *p, int op, int iSavepoint){
 	  p->inTrans = TRANS_NONE;
 	}
   }
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -1408,6 +1482,7 @@ void *sqlite3BtreeSchema(Btree *p, int nBytes, void(*xFree)(void *)){
     p->pBt->pSchema = sqlite3MallocZero(nBytes);
 	p->pBt->xFreeSchema = xFree;
   }
+  LOG("done",0);
   return p->pBt->pSchema;
 }
 
@@ -1417,6 +1492,7 @@ void *sqlite3BtreeSchema(Btree *p, int nBytes, void(*xFree)(void *)){
 ** sqlite_master table. Otherwise SQLITE_OK.
 */
 int sqlite3BtreeSchemaLocked(Btree *p){
+  LOG("rc=0",0);
   return SQLITE_OK;
 }
 
@@ -1436,6 +1512,7 @@ int sqlite3BtreeSchemaLocked(Btree *p){
 ** normally a worry.
 */
 int sqlite3BtreeSetCacheSize(Btree *p, int mxPage){
+  LOG("done",0);
   return SQLITE_OK;
 }
 
@@ -1466,6 +1543,7 @@ void sqlite3BtreeSetCachedRowid(BtCursor *pCur, sqlite3_int64 iRowid){
 	    pc->cachedRowid = iRowid;
 	}
   }
+  LOG("done",0);
 }
 
 /*
@@ -1489,6 +1567,7 @@ void sqlite3BtreeSetCachedRowid(BtCursor *pCur, sqlite3_int64 iRowid){
 ** and autovacuum mode can no longer be changed.
 */
 int sqlite3BtreeSetPageSize(Btree *p, int pageSize, int nReserve, int iFix){
+  LOG("done",0);
 	return SQLITE_READONLY;
 }
 
@@ -1513,6 +1592,8 @@ int sqlite3BtreeSetSafetyLevel(
   else
     onoff = 0;
   mdb_env_set_flags(p->pBt->env, MDB_NOSYNC, onoff);
+  LOG("done",0);
+  return SQLITE_OK;
 }
 #endif
 
@@ -1522,6 +1603,7 @@ int sqlite3BtreeSetSafetyLevel(
 ** header to iVersion.
 */
 int sqlite3BtreeSetVersion(Btree *pBtree, int iVersion){
+  LOG("done",0);
   return SQLITE_OK;
 }
 
@@ -1531,6 +1613,7 @@ int sqlite3BtreeSetVersion(Btree *pBtree, int iVersion){
 */
 int sqlite3BtreeSyncDisabled(Btree *p){
   int flags;
+  LOG("done",0);
   mdb_env_get_flags(p->pBt->env, &flags);
   return (flags & MDB_NOSYNC) != 0;
 }
@@ -1548,6 +1631,7 @@ int sqlite3BtreeSyncDisabled(Btree *p){
 ** are fully isolated from the write transaction.
 */
 void sqlite3BtreeTripAllCursors(Btree *pBtree, int errCode){
+  LOG("done",0);
   /* no-op */
 }
 
@@ -1573,6 +1657,7 @@ int sqlite3BtreeUpdateMeta(Btree *p, int idx, u32 iMeta){
   data.mv_data = &iMeta;
   data.mv_size = sizeof(iMeta);
   rc = mdb_put(p->curr_txn, dbi, &key, &data, 0);
+  LOG("rc=%d",rc);
   return errmap(rc);
 }
 
@@ -1586,6 +1671,7 @@ int sqlite3BtreeUpdateMeta(Btree *p, int idx, u32 iMeta){
 */
 int sqlite3_enable_shared_cache(int enable){
   sqlite3GlobalConfig.sharedCacheEnabled = enable;
+  LOG("done",0);
   return SQLITE_OK;
 }
 #endif
