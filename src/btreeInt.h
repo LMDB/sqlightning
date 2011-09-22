@@ -30,6 +30,7 @@ struct Btree {
   MDB_txn *curr_txn;
   u8 inTrans;        /* TRANS_NONE, TRANS_READ or TRANS_WRITE */
   u8 locked;         /* True if db currently has pBt locked */
+  u8 isTemp;		 /* a temporary DB */
   int wantToLock;    /* Number of nested calls to sqlite3BtreeEnter() */
   Btree *pNext;      /* List of other sharable Btrees from the same db */
   Btree *pPrev;      /* Back pointer of the same list */
