@@ -613,6 +613,8 @@ int sqlite3BtreeData(BtCursor *pCur, u32 offset, u32 amt, void *pBuf){
   return rc;
 }
 
+static int joinIndexKey(MDB_node *node, BtCursor *pCur);
+
 /*
 ** For the entry that cursor pCur is point to, return as
 ** many bytes of the key or data as are available on the local
@@ -626,8 +628,14 @@ const void *sqlite3BtreeKeyFetch(BtCursor *pCur, int *pAmt){
   LOG("done",0);
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
-	*pAmt = NODEKSZ(node);
-	return NODEKEY(node);
+	if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
+	  *pAmt = NODEKSZ(node);
+	  return NODEKEY(node);
+	} else {
+	  *pAmt = NODEKSZ(node) + NODEDSZ(node);
+	  joinIndexKey(node, pCur);
+	  return pCur->index.mv_data;
+	}
   } else {
     return NULL;
   }
@@ -636,6 +644,11 @@ const void *sqlite3BtreeDataFetch(BtCursor *pCur, int *pAmt){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
   MDB_val data;
   LOG("done",0);
+  /* index tables are supposed to be all key, no data */
+  if (!(mc->mc_db->md_flags & MDB_INTEGERKEY)) {
+    *pAmt = 0;
+	return NULL;
+  }
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
     mdb_node_read(mc->mc_txn, node, &data);
@@ -725,7 +738,8 @@ int sqlite3BtreeFirst(BtCursor *pCur, int *pRes){
   if (mc->mc_db->md_root == P_INVALID)
     *pRes = 1;
   else {
-    mdb_cursor_get(mc, NULL, NULL, MDB_FIRST);
+    MDB_val key, data;
+    mdb_cursor_get(mc, &key, &data, MDB_FIRST);
 	*pRes = 0;
   }
   LOG("rc=0, *pRes=%d",*pRes);
@@ -903,6 +917,32 @@ static void splitIndexKey(MDB_val *key, MDB_val *data)
 	putVarint32(&aKey[key->mv_size], rowidType);
 	putVarint32(aKey, hdrSize-1);
 	data->mv_data = &aKey[key->mv_size];
+}
+
+static int joinIndexKey(MDB_node *node, BtCursor *pCur)
+{
+	u32 hdrSize;
+	u_int32_t amount;
+	unsigned char *aKey = (unsigned char *)NODEKEY(node);
+	unsigned char *aData = (unsigned char *)NODEDATA(node);
+	unsigned char *newKey;
+
+	amount = NODEKSZ(node) + NODEDSZ(node);
+	if (pCur->index.mv_size < amount) {
+	  sqlite3_free(pCur->index.mv_data);
+	  pCur->index.mv_data = sqlite3_malloc(amount*2);
+	  if (!pCur->index.mv_data)
+	    return SQLITE_NOMEM;
+	  pCur->index.mv_size = amount*2;
+	}
+	newKey = (unsigned char *)pCur->index.mv_data;
+	getVarint32(aKey, hdrSize);
+	memcpy(newKey, aKey, hdrSize);
+	memcpy(&newKey[hdrSize+1], &aKey[hdrSize], NODEKSZ(node) - hdrSize);
+	memcpy(&newKey[NODEKSZ(node)+1], &aData[1], NODEDSZ(node) - 1);
+	newKey[hdrSize] = aData[0];
+	putVarint32(newKey, hdrSize+1);
+	return SQLITE_OK;
 }
 
 /*

@@ -120,4 +120,5 @@ struct BtCursor {
   Btree *pBtree;
   struct KeyInfo *pKeyInfo; /* Argument passed to comparison function */
   sqlite3_int64 cachedRowid; /* Next rowid cache.  0 means not valid */
+  MDB_val index;		/* reconstructed Index key */
 };
