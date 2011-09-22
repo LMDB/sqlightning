@@ -3,7 +3,7 @@
 #include "mdb.c"
 #include "midl.c"
 
-#if 1
+#if 0
 #define LOG(fmt,...)   sqlite3DebugPrintf("%s:%d " fmt "\n", __func__, __LINE__, __VA_ARGS__)
 #else
 #define LOG(fmt,...)	((void)0)
@@ -490,6 +490,14 @@ int sqlite3BtreeCreateTable(Btree *p, int *piTable, int flags){
   last++;
   sprintf(name, "Tab.%08x", last);
 
+  /* create first DB implicitly */
+  if (last == 1) {
+    rc = mdb_open(p->main_txn, name, MDB_CREATE|MDB_INTEGERKEY, &dbi);
+	if (rc)
+		goto done;
+	last++;
+    sprintf(name, "Tab.%08x", last);
+  }
   mflags = MDB_CREATE;
 
   if (flags & BTREE_INTKEY) {
@@ -507,6 +515,7 @@ int sqlite3BtreeCreateTable(Btree *p, int *piTable, int flags){
 	}
 	sqlite3BtreeUpdateMeta(p, BTREE_LARGEST_ROOT_PAGE, last);
   }
+done:
   LOG("rc=%d",rc);
   return errmap(rc);
 }
@@ -1214,7 +1223,6 @@ int sqlite3BtreeMovetoUnpacked(
   ret = MDB_NOTFOUND;
 
   if (!mc->mc_db->md_entries) {
-    *pRes = res;
 	mc->mc_flags &= ~C_INITIALIZED;
 	ret = 0;
 	goto done;
@@ -1249,9 +1257,18 @@ int sqlite3BtreeMovetoUnpacked(
 	  ret = mdb_cursor_get(mc, key, NULL, MDB_SET_RANGE);
 	}
   }
-  res = ret ? 1 : 0;
-  *pRes = res;
+  if (ret) {
+    if (mc->mc_ki[mc->mc_top] >= NUMKEYS(mc->mc_pg[mc->mc_top]))
+	  res = -1;
+	else
+	  res = 1;
+  } else {
+    res = 0;
+  }
+  if (ret == MDB_NOTFOUND)
+    ret = 0;
 done:
+  *pRes = res;
   LOG("rc=%d, *pRes=%d", ret, res);
   return errmap(ret);
 }
