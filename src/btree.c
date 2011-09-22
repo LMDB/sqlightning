@@ -3,7 +3,7 @@
 #include "mdb.c"
 #include "midl.c"
 
-#if 0
+#if 1
 #define LOG(fmt,...)   sqlite3DebugPrintf("%s:%d " fmt "\n", __func__, __LINE__, __VA_ARGS__)
 #else
 #define LOG(fmt,...)	((void)0)
@@ -481,17 +481,12 @@ int sqlite3BtreeCreateTable(Btree *p, int *piTable, int flags){
   MDB_val key;
   char name[13];
   unsigned int mflags;
-  int rc, last = 0;
+  int rc;
+  u32 last;
 
   pBt = p->pBt;
 
-  mdb_cursor_init(&mc, p->main_txn, MAIN_DBI, NULL);
-  rc = mdb_cursor_get(&mc, &key, NULL, MDB_LAST);
-  if (rc == 0) {
-    if (!strncmp(key.mv_data, "Tab.", 3)) {
-	  sscanf(key.mv_data+4, "%08x", &last);
-	}
-  }
+  sqlite3BtreeGetMeta(p, BTREE_LARGEST_ROOT_PAGE, &last);
   last++;
   sprintf(name, "Tab.%08x", last);
 
@@ -510,6 +505,7 @@ int sqlite3BtreeCreateTable(Btree *p, int *piTable, int flags){
 	if (mflags & MDB_DUPSORT) {
 	  mdb_set_compare(p->main_txn, dbi, BtreeCompare);
 	}
+	sqlite3BtreeUpdateMeta(p, BTREE_LARGEST_ROOT_PAGE, last);
   }
   LOG("rc=%d",rc);
   return errmap(rc);
@@ -560,7 +556,7 @@ int sqlite3BtreeCursor(
     pCur->pBtree = p;
     pCur->pKeyInfo = pKeyInfo;
   }
-  LOG("rc=%d",rc);
+  LOG("rc=%d, iTable=%d",rc, iTable);
   return rc;
 }
 
@@ -833,10 +829,9 @@ void sqlite3BtreeGetMeta(Btree *p, int idx, u32 *pMeta){
 
   assert(idx >= 0 && idx < NUMMETA);
 
-  LOG("done",0);
   if (!idx) {
     *pMeta = 0;
-	return;
+	goto done;
   }
   rc = mdb_open(p->curr_txn, NULL, 0, &dbi);
   key.mv_data = &idx;
@@ -846,6 +841,8 @@ void sqlite3BtreeGetMeta(Btree *p, int idx, u32 *pMeta){
     memcpy(pMeta, data.mv_data, sizeof(*pMeta));
   else
     *pMeta = 0;
+done:
+  LOG("idx=%d, *pMeta=%u",idx,*pMeta);
 }
 
 /*
@@ -1723,7 +1720,7 @@ int sqlite3BtreeUpdateMeta(Btree *p, int idx, u32 iMeta){
   data.mv_data = &iMeta;
   data.mv_size = sizeof(iMeta);
   rc = mdb_put(p->curr_txn, dbi, &key, &data, 0);
-  LOG("rc=%d",rc);
+  LOG("rc=%d, idx=%d, iMeta=%u",rc,idx,iMeta);
   return errmap(rc);
 }
 
