@@ -1204,8 +1204,8 @@ int sqlite3BtreeNext(BtCursor *pCur, int *pRes){
   if (mc->mc_db->md_root == P_INVALID)
     *pRes = 1;
   else {
-    mdb_cursor_get(mc, &key, &data, MDB_NEXT);
-	*pRes = 0;
+    int rc = mdb_cursor_get(mc, &key, &data, MDB_NEXT);
+	*pRes = (rc == MDB_NOTFOUND) ? 1 : 0;
   }
   LOG("rc=0, *pRes=%d",*pRes);
   return SQLITE_OK;
@@ -1396,8 +1396,8 @@ int sqlite3BtreePrevious(BtCursor *pCur, int *pRes){
   if (mc->mc_db->md_root == P_INVALID)
     *pRes = 1;
   else {
-    mdb_cursor_get(mc, &key, &data, MDB_PREV);
-	*pRes = 0;
+    int rc = mdb_cursor_get(mc, &key, &data, MDB_PREV);
+	*pRes = (rc == MDB_NOTFOUND) ? 1 : 0;
   }
   LOG("done",0);
   return SQLITE_OK;
@@ -1427,10 +1427,14 @@ int sqlite3BtreeRollback(Btree *p){
 ** transaction remains open.
 */
 int sqlite3BtreeSavepoint(Btree *p, int op, int iSavepoint){
-  MDB_txn *parent = p->curr_txn->mt_parent;
-  int rc;
+  MDB_txn *parent;
+  int rc = SQLITE_OK;
+
+  if (!p->curr_txn)
+    goto done;
+
+  parent = p->curr_txn->mt_parent;
   if (op == SAVEPOINT_ROLLBACK) {
-    rc = 0;
     if (iSavepoint == -1) {
 	  mdb_txn_abort(p->main_txn);
 	} else {
@@ -1453,6 +1457,7 @@ int sqlite3BtreeSavepoint(Btree *p, int op, int iSavepoint){
 	  p->inTrans = TRANS_NONE;
 	}
   }
+done:
   LOG("rc=%d",rc);
   return errmap(rc);
 }

@@ -2,20 +2,22 @@
 #include "sqliteInt.h"
 #include "wal.h"
 
+static sqlite3_file nullfile;
+
 /*
 ** Return the file handle for the database file associated
 ** with the pager.  This might return NULL if the file has
 ** not yet been opened.
 */
 sqlite3_file *sqlite3PagerFile(Pager *pPager){
-  return NULL;
+  return &nullfile;
 }
 
 /*
 ** Return the full pathname of the database file.
 */
 const char *sqlite3PagerFilename(Pager *pPager){
-  return NULL;
+  return "/dev/null";
 }
 
 /*
@@ -29,6 +31,7 @@ const char *sqlite3PagerFilename(Pager *pPager){
 ** locking-mode.
 */
 int sqlite3PagerLockingMode(Pager *pPager, int eMode){
+  return PAGER_LOCKINGMODE_NORMAL;
 }
 
 /*
