@@ -3,8 +3,10 @@
 #include "mdb.c"
 #include "midl.c"
 
-#if 1
+#if 0
 #define LOG(fmt,...)   sqlite3DebugPrintf("%s:%d " fmt "\n", __func__, __LINE__, __VA_ARGS__)
+#else
+#define LOG(fmt,...)	((void)0)
 #endif
 
 /*
