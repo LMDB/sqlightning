@@ -339,6 +339,11 @@ int sqlite3BtreeClose(Btree *p){
 	  while (*prev != pBt) prev = &(*prev)->pNext;
 	  *prev = pBt->pNext;
 	  sqlite3_free(pBt);
+	} else {
+      Btree **prev;
+	  prev = &pBt->trees;
+	  while (*prev != p) prev = &(*prev)->pNext;
+	  *prev = p->pNext;
 	}
 	sqlite3_mutex_leave(mutexOpen);
   }
@@ -617,6 +622,8 @@ void sqlite3BtreeCursorZero(BtCursor *p){
   p->pKeyInfo = NULL;
   p->pBtree = NULL;
   p->cachedRowid = 0;
+  p->index.mv_data = NULL;
+  p->index.mv_size = 0;
   LOG("done",0);
 }
 
@@ -1344,6 +1351,8 @@ int sqlite3BtreeOpen(
   p->curr_txn = NULL;
   p->inTrans = TRANS_NONE;
   p->isTemp = 0;
+  p->locked = 0;
+  p->wantToLock = 0;
   /* Transient and in-memory are all the same, use /tmp */
   if ((vfsFlags & SQLITE_OPEN_TRANSIENT_DB) || !zFilename || !zFilename[0] ||
 	!strcmp(zFilename, ":memory:")) {
@@ -1366,7 +1375,7 @@ int sqlite3BtreeOpen(
 	}
 	if (pBt) {
 	  sqlite3_mutex_leave(mutexOpen);
-	  p->pNext - pBt->trees;
+	  p->pNext = pBt->trees;
 	  pBt->trees = p;
 	  *ppBtree = p;
 	  goto done;
@@ -1443,7 +1452,7 @@ int sqlite3BtreeOpen(
 	  pBt->pNext = sqlite3SharedCacheList;
 	  sqlite3SharedCacheList = pBt;
 	  sqlite3_mutex_leave(mutexOpen);
-	  p->pNext - pBt->trees;
+	  p->pNext = NULL;
 	  pBt->trees = p;
 	}
 	p->pBt = pBt;
