@@ -61,6 +61,7 @@ static void pager_test_reiniter(DbPage *pNotUsed){
   return;
 }
 
+#if 0
 /*
 ** Usage:   pager_open FILENAME N-PAGE
 **
@@ -515,6 +516,33 @@ static int page_write(
   pData[test_pagesize-1] = 0;
   return TCL_OK;
 }
+#else
+static int t2_tcl_function_stub(
+  void *NotUsed,
+  Tcl_Interp *interp,    /* The TCL interpreter that invoked this command */
+  int argc,              /* Number of arguments */
+  const char **argv      /* Text of each argument */
+){
+  return TCL_OK;
+}
+
+#define	pager_open	t2_tcl_function_stub
+#define	pager_close	t2_tcl_function_stub
+#define	pager_commit	t2_tcl_function_stub
+#define	pager_rollback	t2_tcl_function_stub
+#define	pager_stmt_begin	t2_tcl_function_stub
+#define	pager_stmt_commit	t2_tcl_function_stub
+#define	pager_stmt_rollback	t2_tcl_function_stub
+#define	pager_stats	t2_tcl_function_stub
+#define	pager_pagecount	t2_tcl_function_stub
+#define	page_get	t2_tcl_function_stub
+#define	page_lookup	t2_tcl_function_stub
+#define	page_unref	t2_tcl_function_stub
+#define	page_read	t2_tcl_function_stub
+#define	page_write	t2_tcl_function_stub
+#define	page_number	t2_tcl_function_stub
+#define	pager_truncate	t2_tcl_function_stub
+#endif
 
 #ifndef SQLITE_OMIT_DISKIO
 /*
@@ -544,6 +572,9 @@ static int fake_big_file(
   }
   if( Tcl_GetInt(interp, argv[1], &n) ) return TCL_ERROR;
 
+  /* this does not work with MDB */
+  return TCL_ERROR;
+
   pVfs = sqlite3_vfs_find(0);
   rc = sqlite3OsOpenMalloc(pVfs, argv[2], &fd, 
       (SQLITE_OPEN_CREATE|SQLITE_OPEN_READWRITE|SQLITE_OPEN_MAIN_DB), 0
@@ -565,6 +596,7 @@ static int fake_big_file(
 #endif
 
 
+#if 0
 /*
 ** test_control_pending_byte  PENDING_BYTE
 **
@@ -588,6 +620,9 @@ static int testPendingByte(
   Tcl_SetObjResult(interp, Tcl_NewIntObj(rc));
   return TCL_OK;
 }  
+#else
+#define	testPendingByte	t2_tcl_function_stub
+#endif
 
 /*
 ** sqlite3BitvecBuiltinTest SIZE PROGRAM

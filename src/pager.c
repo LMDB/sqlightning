@@ -176,5 +176,28 @@ void *sqlite3PagerGetData(DbPage *pPg)
 void sqlite3PagerUnref(DbPage *pPg)
 {}
 #endif
+/*
+** The following set of routines are used to disable the simulated
+** I/O error mechanism.  These routines are used to avoid simulated
+** errors in places where we do not care about errors.
+**
+** Unless -DSQLITE_TEST=1 is used, these routines are all no-ops
+** and generate no code.
+*/
+#ifdef SQLITE_TEST
+extern int sqlite3_io_error_pending;
+extern int sqlite3_io_error_hit;
+static int saved_cnt;
+void disable_simulated_io_errors(void){
+  saved_cnt = sqlite3_io_error_pending;
+  sqlite3_io_error_pending = -1;
+}
+void enable_simulated_io_errors(void){
+  sqlite3_io_error_pending = saved_cnt;
+}
+#else
+# define disable_simulated_io_errors()
+# define enable_simulated_io_errors()
+#endif
 
 #endif

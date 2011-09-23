@@ -20,6 +20,8 @@
 
 #include "sqliteInt.h"
 
+#define SQLITE_OMIT_VIRTUALTABLE
+
 #ifndef SQLITE_OMIT_VIRTUALTABLE
 
 /*

@@ -14,7 +14,7 @@
  */
 
 /* The head of the linked list of shared Btree objects */
-struct BtShared *g_shared_btrees = NULL;
+struct BtShared *sqlite3SharedCacheList = NULL;
 
 /* The environment handle used for temporary environments (NULL or open). */
 MDB_env *g_tmp_env;
@@ -330,10 +330,14 @@ int sqlite3BtreeClose(Btree *p){
 	mutexOpen = sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_OPEN);
 	sqlite3_mutex_enter(mutexOpen);
 	if (--pBt->nRef == 0) {
+	  BtShared **prev;
 	  if (pBt->xFreeSchema && pBt->pSchema)
 		pBt->xFreeSchema(pBt->pSchema);
 	  sqlite3DbFree(0, pBt->pSchema);
 	  mdb_env_close(pBt->env);
+	  prev = &sqlite3SharedCacheList;
+	  while (*prev != pBt) prev = &(*prev)->pNext;
+	  *prev = pBt->pNext;
 	  sqlite3_free(pBt);
 	}
 	sqlite3_mutex_leave(mutexOpen);
@@ -1352,7 +1356,7 @@ int sqlite3BtreeOpen(
 	sprintf(envpath, "%s-mdb", dirPathName);
     mutexOpen = sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_OPEN);
 	sqlite3_mutex_enter(mutexOpen);
-	for (pBt = g_shared_btrees; pBt; pBt = pBt->pNext) {
+	for (pBt = sqlite3SharedCacheList; pBt; pBt = pBt->pNext) {
 		if (pBt->env && !strcmp(pBt->env->me_path, envpath)) {
 			p->pBt = pBt;
 			pBt->nRef++;
@@ -1436,8 +1440,8 @@ int sqlite3BtreeOpen(
 	pBt->pWriter = NULL;
 	if (p->isTemp) {
 	} else {
-	  pBt->pNext = g_shared_btrees;
-	  g_shared_btrees = pBt;
+	  pBt->pNext = sqlite3SharedCacheList;
+	  sqlite3SharedCacheList = pBt;
 	  sqlite3_mutex_leave(mutexOpen);
 	  p->pNext - pBt->trees;
 	  pBt->trees = p;
