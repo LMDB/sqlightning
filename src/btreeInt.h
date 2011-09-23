@@ -86,6 +86,7 @@ struct BtShared {
   sqlite3 *db;          /* Database connection currently using this Btree */
   Btree *trees;			/* All Btree handles using this struct */
   MDB_env *env;
+  char *lockname;		/* name of MDB lockfile */
   u8 openFlags;         /* Flags to sqlite3BtreeOpen() */
   u8 inTransaction;     /* Transaction state */
   int nTransaction;     /* Number of open transactions (read + write) */

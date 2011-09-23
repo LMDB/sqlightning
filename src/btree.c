@@ -335,6 +335,7 @@ int sqlite3BtreeClose(Btree *p){
 	  prev = &sqlite3SharedCacheList;
 	  while (*prev != pBt) prev = &(*prev)->pNext;
 	  *prev = pBt->pNext;
+	  sqlite3_free(pBt->lockname);
 	  sqlite3_free(pBt);
 	} else {
       Btree **prev;
@@ -823,7 +824,7 @@ const char *sqlite3BtreeGetFilename(Btree *p){
 */
 const char *sqlite3BtreeGetJournalname(Btree *p){
   LOG("done",0);
-  return "null";
+  return p->pBt->lockname;
 }
 
 /*
@@ -1380,8 +1381,7 @@ int sqlite3BtreeOpen(
   }
 	pBt = sqlite3_malloc(sizeof(BtShared));
 	if (!pBt) {
-	  if (p->isTemp) {
-	  } else {
+	  if (!p->isTemp) {
 	    sqlite3_mutex_leave(mutexOpen);
 	  }
 	  rc = SQLITE_NOMEM;
@@ -1389,15 +1389,18 @@ int sqlite3BtreeOpen(
 	}
 	rc = mdb_env_create(&pBt->env);
 	if (rc) {
-	  if (p->isTemp) {
-	  } else {
+	  if (!p->isTemp) {
 	    sqlite3_mutex_leave(mutexOpen);
 	  }
 	  rc = errmap(rc);
 	  goto done;
 	}
-	mdb_env_set_maxdbs(pBt->env, 256);
-	mdb_env_set_maxreaders(pBt->env, 254);
+	if (p->isTemp) {
+	  mdb_env_set_maxdbs(pBt->env, 64);
+	} else {
+	  mdb_env_set_maxdbs(pBt->env, 256);
+	  mdb_env_set_maxreaders(pBt->env, 254);
+	}
 	mdb_env_set_mapsize(pBt->env, 256*1048576);
 	eflags = MDB_NOSUBDIR;
 	if (vfsFlags & SQLITE_OPEN_READONLY)
@@ -1407,10 +1410,21 @@ int sqlite3BtreeOpen(
 	  eflags |= MDB_NOSYNC;
 	rc = mdb_env_open(pBt->env, dirPathName, eflags, SQLITE_DEFAULT_FILE_PERMISSIONS);
 	if (rc) {
-	  if (p->isTemp)
+	  if (!p->isTemp)
 	    sqlite3_mutex_leave(mutexOpen);
 	  rc = errmap(rc);
 	  goto done;
+	}
+	{
+	  int len = strlen(dirPathName);
+	  pBt->lockname = sqlite3_malloc(len + sizeof(LOCKSUFF));
+	  if (!pBt->lockname) {
+	    if (!p->isTemp)
+	        sqlite3_mutex_leave(mutexOpen);
+		rc = SQLITE_NOMEM;
+		goto done;
+	  }
+	  sprintf(pBt->lockname, "%s" LOCKSUFF, dirPathName);
 	}
 	pBt->db = db;
 	pBt->openFlags = flags;
@@ -1425,9 +1439,9 @@ int sqlite3BtreeOpen(
 	  pBt->pNext = sqlite3SharedCacheList;
 	  sqlite3SharedCacheList = pBt;
 	  sqlite3_mutex_leave(mutexOpen);
-	  p->pNext = NULL;
-	  pBt->trees = p;
 	}
+	p->pNext = NULL;
+	pBt->trees = p;
 	p->pBt = pBt;
 	*ppBtree = p;
 
