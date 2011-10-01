@@ -405,6 +405,7 @@ int sqlite3BtreeCommit(Btree *p){
 ** the write-transaction for this database file is to delete the journal.
 */
 int sqlite3BtreeCommitPhaseOne(Btree *p, const char *zMaster){
+  BtCursor *pc, *pn;
   int rc = 0;
   if (p->main_txn) {
     rc = mdb_txn_commit(p->main_txn);
@@ -412,6 +413,12 @@ int sqlite3BtreeCommitPhaseOne(Btree *p, const char *zMaster){
     p->curr_txn = NULL;
 	p->inTrans = TRANS_NONE;
   }
+  for (pn = p->pCursor, pc=pn; pc; pc=pn) {
+    pn = pc->pNext;
+    sqlite3BtreeCloseCursor(pc);
+	sqlite3BtreeCursorZero(pc);
+  }
+
   LOG("rc=%d",rc);
   return errmap(rc);
 }
@@ -617,11 +624,23 @@ int sqlite3BtreeCursorSize(void){
 ** of run-time by skipping the initialization of those elements.
 */
 void sqlite3BtreeCursorZero(BtCursor *p){
+  MDB_cursor *mc = (MDB_cursor *)(p+1);
   p->pKeyInfo = NULL;
   p->pBtree = NULL;
   p->cachedRowid = 0;
   p->index.mv_data = NULL;
   p->index.mv_size = 0;
+  mc->mc_next = 0;
+  mc->mc_orig = 0;
+  mc->mc_xcursor = 0;
+  mc->mc_txn = 0;
+  mc->mc_dbi = 0;
+  mc->mc_db = 0;
+  mc->mc_dbx = 0;
+  mc->mc_dbflag = 0;
+  mc->mc_snum = 0;
+  mc->mc_top = 0;
+  mc->mc_flags = 0;
   LOG("done",0);
 }
 
@@ -1291,7 +1310,7 @@ done:
 int sqlite3BtreeNext(BtCursor *pCur, int *pRes){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
   MDB_val key, data;
-  if (mc->mc_db->md_root == P_INVALID)
+  if (!mc->mc_db || mc->mc_db->md_root == P_INVALID)
     *pRes = 1;
   else {
     int rc = mdb_cursor_get(mc, &key, &data, MDB_NEXT);
