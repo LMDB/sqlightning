@@ -1,5 +1,5 @@
 #include "sqliteInt.h"
-#include "mdb.h"
+#include "lmdb.h"
 
 /* A Btree handle
 **
