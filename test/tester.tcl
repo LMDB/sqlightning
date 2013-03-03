@@ -19,6 +19,7 @@
 #
 # Commands to manipulate the db and the file-system at a high level:
 #
+#      get_pwd
 #      copy_file              FROM TO
 #      delete_file            FILENAME
 #      drop_all_tables        ?DB?
@@ -57,7 +58,7 @@
 # Commands providing a lower level interface to the global test counters:
 #
 #      set_test_counter       COUNTER ?VALUE?
-#      omit_test              TESTNAME REASON
+#      omit_test              TESTNAME REASON ?APPEND?
 #      fail_test              TESTNAME
 #      incr_ntest
 #
@@ -146,6 +147,24 @@ proc getFileRetryDelay {} {
     return 100; # TODO: Good default?
   }
   return $::G(file-retry-delay)
+}
+
+# Return the string representing the name of the current directory.  On
+# Windows, the result is "normalized" to whatever our parent command shell
+# is using to prevent case-mismatch issues.
+#
+proc get_pwd {} {
+  if {$::tcl_platform(platform) eq "windows"} {
+    #
+    # NOTE: Cannot use [file normalize] here because it would alter the
+    #       case of the result to what Tcl considers canonical, which would
+    #       defeat the purpose of this procedure.
+    #
+    return [string map [list \\ /] \
+        [string trim [exec -- $::env(ComSpec) /c echo %CD%]]]
+  } else {
+    return [pwd]
+  }
 }
 
 # Copy file $from into $to. This is used because some versions of
@@ -274,6 +293,7 @@ if {[info exists cmdlinearg]==0} {
   #   --file-retries=N
   #   --file-retry-delay=N
   #   --start=[$permutation:]$testfile
+  #   --match=$pattern
   #
   set cmdlinearg(soft-heap-limit)    0
   set cmdlinearg(maxerror)        1000
@@ -283,7 +303,8 @@ if {[info exists cmdlinearg]==0} {
   set cmdlinearg(soak)               0
   set cmdlinearg(file-retries)       0
   set cmdlinearg(file-retry-delay)   0
-  set cmdlinearg(start)             "" 
+  set cmdlinearg(start)             ""
+  set cmdlinearg(match)             ""
 
   set leftover [list]
   foreach a $argv {
@@ -335,6 +356,12 @@ if {[info exists cmdlinearg]==0} {
           set ::G(start:file)        ${s.file}
         }
         if {$::G(start:file) == ""} {unset ::G(start:file)}
+      }
+      {^-+match=.+$} {
+        foreach {dummy cmdlinearg(match)} [split $a =] break
+
+        set ::G(match) $cmdlinearg(match)
+        if {$::G(match) == ""} {unset ::G(match)}
       }
       default {
         lappend leftover $a
@@ -414,9 +441,11 @@ if {0==[info exists ::SLAVE]} {
 
 # Record the fact that a sequence of tests were omitted.
 #
-proc omit_test {name reason} {
+proc omit_test {name reason {append 1}} {
   set omitList [set_test_counter omit_list]
-  lappend omitList [list $name $reason]
+  if {$append} {
+    lappend omitList [list $name $reason]
+  }
   set_test_counter omit_list $omitList
 }
 
@@ -471,14 +500,20 @@ proc do_test {name cmd expected} {
   incr_ntest
   puts -nonewline $name...
   flush stdout
-  if {[catch {uplevel #0 "$cmd;\n"} result]} {
-    puts "\nError: $result"
-    fail_test $name
-  } elseif {[string compare $result $expected]} {
-    puts "\nExpected: \[$expected\]\n     Got: \[$result\]"
-    fail_test $name
+
+  if {![info exists ::G(match)] || [string match $::G(match) $name]} {
+    if {[catch {uplevel #0 "$cmd;\n"} result]} {
+      puts "\nError: $result"
+      fail_test $name
+    } elseif {[string compare $result $expected]} {
+      puts "\nExpected: \[$expected\]\n     Got: \[$result\]"
+      fail_test $name
+    } else {
+      puts " Ok"
+    }
   } else {
-    puts " Ok"
+    puts " Omitted"
+    omit_test $name "pattern mismatch" 0
   }
   flush stdout
 }
@@ -968,7 +1003,7 @@ proc crashsql {args} {
   # $crashfile gets compared to the native filename in 
   # cfSync(), which can be different then what TCL uses by
   # default, so here we force it to the "nativename" format.
-  set cfile [string map {\\ \\\\} [file nativename [file join [pwd] $crashfile]]]
+  set cfile [string map {\\ \\\\} [file nativename [file join [get_pwd] $crashfile]]]
 
   set f [open crash.tcl w]
   puts $f "sqlite3_crash_enable 1"

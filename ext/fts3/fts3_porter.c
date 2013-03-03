@@ -40,7 +40,7 @@ typedef struct porter_tokenizer {
 } porter_tokenizer;
 
 /*
-** Class derived from sqlit3_tokenizer_cursor
+** Class derived from sqlite3_tokenizer_cursor
 */
 typedef struct porter_tokenizer_cursor {
   sqlite3_tokenizer_cursor base;
@@ -630,6 +630,7 @@ static const sqlite3_tokenizer_module porterTokenizerModule = {
   porterOpen,
   porterClose,
   porterNext,
+  0
 };
 
 /*

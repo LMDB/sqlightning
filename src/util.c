@@ -216,13 +216,13 @@ int sqlite3Dequote(char *z){
 ** Some systems have stricmp().  Others have strcasecmp().  Because
 ** there is no consistency, we will define our own.
 **
-** IMPLEMENTATION-OF: R-20522-24639 The sqlite3_strnicmp() API allows
-** applications and extensions to compare the contents of two buffers
-** containing UTF-8 strings in a case-independent fashion, using the same
-** definition of case independence that SQLite uses internally when
-** comparing identifiers.
+** IMPLEMENTATION-OF: R-30243-02494 The sqlite3_stricmp() and
+** sqlite3_strnicmp() APIs allow applications and extensions to compare
+** the contents of two buffers containing UTF-8 strings in a
+** case-independent fashion, using the same definition of "case
+** independence" that SQLite uses internally when comparing identifiers.
 */
-int sqlite3StrICmp(const char *zLeft, const char *zRight){
+int sqlite3_stricmp(const char *zLeft, const char *zRight){
   register unsigned char *a, *b;
   a = (unsigned char *)zLeft;
   b = (unsigned char *)zRight;
@@ -1169,18 +1169,17 @@ int sqlite3AbsInt32(int x){
 **     test.db-journal    =>   test.nal
 **     test.db-wal        =>   test.wal
 **     test.db-shm        =>   test.shm
+**     test.db-mj7f3319fa =>   test.9fa
 */
 void sqlite3FileSuffix3(const char *zBaseFilename, char *z){
 #if SQLITE_ENABLE_8_3_NAMES<2
-  const char *zOk;
-  zOk = sqlite3_uri_parameter(zBaseFilename, "8_3_names");
-  if( zOk && sqlite3GetBoolean(zOk) )
+  if( sqlite3_uri_boolean(zBaseFilename, "8_3_names", 0) )
 #endif
   {
     int i, sz;
     sz = sqlite3Strlen30(z);
     for(i=sz-1; i>0 && z[i]!='/' && z[i]!='.'; i--){}
-    if( z[i]=='.' && ALWAYS(sz>i+4) ) memcpy(&z[i+1], &z[sz-3], 4);
+    if( z[i]=='.' && ALWAYS(sz>i+4) ) memmove(&z[i+1], &z[sz-3], 4);
   }
 }
 #endif

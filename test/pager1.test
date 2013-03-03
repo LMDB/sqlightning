@@ -54,6 +54,8 @@ do_not_use_codec
 # pager1-16.*: Varying sqlite3_vfs.mxPathname
 #
 # pager1-17.*: Tests related to "PRAGMA omit_readlock"
+#              (The omit_readlock pragma has been removed and so have
+#              these tests.)
 #
 # pager1-18.*: Test that the pager layer responds correctly if the b-tree
 #              requests an invalid page number (due to db corruption).
@@ -533,7 +535,7 @@ proc copy_on_mj_delete {method filename args} {
   return SQLITE_OK
 }
 
-set pwd [pwd]
+set pwd [get_pwd]
 foreach {tn1 tcl} {
   1 { set prefix "test.db" }
   2 { 
@@ -885,6 +887,24 @@ do_test pager1.4.7.3 {
   delete_file test.db-journal
   file exists test.db-journal
 } {0}
+do_test pager1.4.8.1 {
+  catch {file attributes test.db -permissions r--------}
+  catch {file attributes test.db -readonly 1}
+  sqlite3 db test.db
+  db eval { SELECT * FROM t1 }
+  sqlite3_db_readonly db main
+} {1}
+do_test pager1.4.8.2 {
+  sqlite3_db_readonly db xyz
+} {-1}
+do_test pager1.4.8.3 {
+  db close
+  catch {file attributes test.db -readonly 0}
+  catch {file attributes test.db -permissions rw-rw-rw-} msg
+  sqlite3 db test.db
+  db eval { SELECT * FROM t1 }
+  sqlite3_db_readonly db main
+} {0}
 
 #-------------------------------------------------------------------------
 # The following tests deal with multi-file commits.
@@ -990,8 +1010,19 @@ do_test pager1-5.4.1 {
       INSERT INTO t2 VALUES(85, 'Gorbachev');
     COMMIT;
   }
-  set ::max_journal
-} [expr 2615+[string length [pwd]]]
+
+  # The size of the journal file is now:
+  # 
+  #   1) 512 byte header +
+  #   2) 2 * (1024+8) byte records +
+  #   3) 20+N bytes of master-journal pointer, where N is the size of 
+  #      the master-journal name encoded as utf-8 with no nul term.
+  #
+  set mj_pointer [expr {
+    20 + [string length [get_pwd]] + [string length "/test.db-mjXXXXXX9XX"]
+  }]
+  expr {$::max_journal==(512+2*(1024+8)+$mj_pointer)}
+} 1
 do_test pager1-5.4.2 {
   set ::max_journal 0
   execsql {
@@ -1001,8 +1032,16 @@ do_test pager1-5.4.2 {
       DELETE FROM t2 WHERE b = 'Lenin';
     COMMIT;
   }
-  set ::max_journal
-} [expr 3111+[string length [pwd]]]
+
+  # In synchronous=full mode, the master-journal pointer is not written
+  # directly after the last record in the journal file. Instead, it is
+  # written starting at the next (in this case 512 byte) sector boundary.
+  #
+  set mj_pointer [expr {
+    20 + [string length [get_pwd]] + [string length "/test.db-mjXXXXXX9XX"]
+  }]
+  expr {$::max_journal==(((512+2*(1024+8)+511)/512)*512 + $mj_pointer)}
+} 1
 db close
 tv delete
 
@@ -1312,6 +1351,7 @@ foreach sectorsize {
     4096 8192 16384 32768 65536 131072 262144
 } {
   tv sectorsize $sectorsize
+  tv devchar {}
   set eff $sectorsize
   if {$sectorsize < 512}   { set eff 512 }
   if {$sectorsize > 65536} { set eff 65536 }
@@ -1688,75 +1728,6 @@ for {set ii [expr $::file_len-5]} {$ii < [expr $::file_len+20]} {incr ii} {
   tv delete
 }
 
-#-------------------------------------------------------------------------
-# Test "PRAGMA omit_readlock". 
-#
-#   pager1-17.$tn.1.*: Test that if a second connection has an open 
-#                      read-transaction, it is not usually possible to write 
-#                      the database.
-#
-#   pager1-17.$tn.2.*: Test that if the second connection was opened with
-#                      the SQLITE_OPEN_READONLY flag, and 
-#                      "PRAGMA omit_readlock = 1" is executed before attaching
-#                      the database and opening a read-transaction on it, it is
-#                      possible to write the db.
-#
-#   pager1-17.$tn.3.*: Test that if the second connection was *not* opened with
-#                      the SQLITE_OPEN_READONLY flag, executing 
-#                      "PRAGMA omit_readlock = 1" has no effect.
-#
-do_multiclient_test tn {
-  do_test pager1-17.$tn.1.1 {
-    sql1 { 
-      CREATE TABLE t1(a, b);
-      INSERT INTO t1 VALUES(1, 2);
-    }
-    sql2 {
-      BEGIN;
-      SELECT * FROM t1;
-    }
-  } {1 2}
-  do_test pager1-17.$tn.1.2 {
-    csql1 { INSERT INTO t1 VALUES(3, 4) }
-  } {1 {database is locked}}
-  do_test pager1-17.$tn.1.3 {
-    sql2 { COMMIT }
-    sql1 { INSERT INTO t1 VALUES(3, 4) }
-  } {}
-
-  do_test pager1-17.$tn.2.1 {
-    code2 {
-      db2 close
-      sqlite3 db2 :memory: -readonly 1
-    }
-    sql2 { 
-      PRAGMA omit_readlock = 1;
-      ATTACH 'test.db' AS two;
-      BEGIN;
-      SELECT * FROM t1;
-    }
-  } {1 2 3 4}
-  do_test pager1-17.$tn.2.2 { sql1 "INSERT INTO t1 VALUES(5, 6)" } {}
-  do_test pager1-17.$tn.2.3 { sql2 "SELECT * FROM t1" }            {1 2 3 4}
-  do_test pager1-17.$tn.2.4 { sql2 "COMMIT ; SELECT * FROM t1" }   {1 2 3 4 5 6}
-
-  do_test pager1-17.$tn.3.1 {
-    code2 {
-      db2 close
-      sqlite3 db2 :memory:
-    }
-    sql2 { 
-      PRAGMA omit_readlock = 1;
-      ATTACH 'test.db' AS two;
-      BEGIN;
-      SELECT * FROM t1;
-    }
-  } {1 2 3 4 5 6}
-  do_test pager1-17.$tn.3.2 {
-  csql1 { INSERT INTO t1 VALUES(3, 4) }
-  } {1 {database is locked}}
-  do_test pager1-17.$tn.3.3 { sql2 COMMIT } {}
-}
 
 #-------------------------------------------------------------------------
 # Test the pagers response to the b-tree layer requesting illegal page 

@@ -476,7 +476,15 @@ static int cfSync(sqlite3_file *pFile, int flags){
     if( nName>nCrashFile ) nName = nCrashFile;
   }
 
+#ifdef TRACE_CRASHTEST
+  printf("cfSync(): nName = %d, nCrashFile = %d, zName = %s, zCrashFile = %s\n",
+         nName, nCrashFile, zName, zCrashFile);
+#endif
+
   if( nName==nCrashFile && 0==memcmp(zName, zCrashFile, nName) ){
+#ifdef TRACE_CRASHTEST
+    printf("cfSync(): name matched, g.iCrash = %d\n", g.iCrash);
+#endif
     if( (--g.iCrash)==0 ) isCrash = 1;
   }
 
@@ -705,17 +713,18 @@ static int processDevSymArgs(
     char *zName;
     int iValue;
   } aFlag[] = {
-    { "atomic",      SQLITE_IOCAP_ATOMIC      },
-    { "atomic512",   SQLITE_IOCAP_ATOMIC512   },
-    { "atomic1k",    SQLITE_IOCAP_ATOMIC1K    },
-    { "atomic2k",    SQLITE_IOCAP_ATOMIC2K    },
-    { "atomic4k",    SQLITE_IOCAP_ATOMIC4K    },
-    { "atomic8k",    SQLITE_IOCAP_ATOMIC8K    },
-    { "atomic16k",   SQLITE_IOCAP_ATOMIC16K   },
-    { "atomic32k",   SQLITE_IOCAP_ATOMIC32K   },
-    { "atomic64k",   SQLITE_IOCAP_ATOMIC64K   },
-    { "sequential",  SQLITE_IOCAP_SEQUENTIAL  },
-    { "safe_append", SQLITE_IOCAP_SAFE_APPEND },
+    { "atomic",              SQLITE_IOCAP_ATOMIC                },
+    { "atomic512",           SQLITE_IOCAP_ATOMIC512             },
+    { "atomic1k",            SQLITE_IOCAP_ATOMIC1K              },
+    { "atomic2k",            SQLITE_IOCAP_ATOMIC2K              },
+    { "atomic4k",            SQLITE_IOCAP_ATOMIC4K              },
+    { "atomic8k",            SQLITE_IOCAP_ATOMIC8K              },
+    { "atomic16k",           SQLITE_IOCAP_ATOMIC16K             },
+    { "atomic32k",           SQLITE_IOCAP_ATOMIC32K             },
+    { "atomic64k",           SQLITE_IOCAP_ATOMIC64K             },
+    { "sequential",          SQLITE_IOCAP_SEQUENTIAL            },
+    { "safe_append",         SQLITE_IOCAP_SAFE_APPEND           },
+    { "powersafe_overwrite", SQLITE_IOCAP_POWERSAFE_OVERWRITE   },
     { 0, 0 }
   };
 

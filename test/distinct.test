@@ -15,6 +15,11 @@
 set testdir [file dirname $argv0]
 source $testdir/tester.tcl
 
+ifcapable !compound {
+  finish_test
+  return
+}
+
 set testprefix distinct
 
 
@@ -46,8 +51,8 @@ proc do_temptables_test {tn sql temptables} {
     set ret ""
     db eval "EXPLAIN [set sql]" {
       if {$opcode == "OpenEphemeral" || $opcode == "SorterOpen"} { 
-        if {$p5 != "10" && $p5!="00"} { error "p5 = $p5" }
-        if {$p5 == "10"} {
+        if {$p5 != "08" && $p5!="00"} { error "p5 = $p5" }
+        if {$p5 == "08"} {
           lappend ret hash
         } else {
           lappend ret btree

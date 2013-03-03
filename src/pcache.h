@@ -23,11 +23,12 @@ typedef struct PCache PCache;
 ** structure.
 */
 struct PgHdr {
-  void *pData;                   /* Content of this page */
+  sqlite3_pcache_page *pPage;    /* Pcache object page handle */
+  void *pData;                   /* Page data */
   void *pExtra;                  /* Extra content */
   PgHdr *pDirty;                 /* Transient list of dirty pages */
-  Pgno pgno;                     /* Page number for this page */
   Pager *pPager;                 /* The pager this page is part of */
+  Pgno pgno;                     /* Page number for this page */
 #ifdef SQLITE_CHECK_PAGES
   u32 pageHash;                  /* Hash of page content */
 #endif
@@ -140,6 +141,9 @@ void sqlite3PcacheSetCachesize(PCache *, int);
 #ifdef SQLITE_TEST
 int sqlite3PcacheGetCachesize(PCache *);
 #endif
+
+/* Free up as much memory as possible from the page cache */
+void sqlite3PcacheShrink(PCache*);
 
 #ifdef SQLITE_ENABLE_MEMORY_MANAGEMENT
 /* Try to return memory used by the pcache module to the main memory heap */

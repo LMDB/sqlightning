@@ -110,6 +110,7 @@ struct Fts3DeferredToken {
 */
 struct Fts3SegReader {
   int iIdx;                       /* Index within level, or 0x7FFFFFFF for PT */
+  int bLookup;                    /* True for a lookup only */
 
   sqlite3_int64 iStartBlock;      /* Rowid of first leaf block to traverse */
   sqlite3_int64 iLeafEndBlock;    /* Rowid of final leaf block to traverse */
@@ -231,6 +232,8 @@ struct SegmentNode {
 
 #define SQL_DELETE_SEGDIR_RANGE       26
 
+#define SQL_SELECT_ALL_LANGID         27
+
 /*
 ** This function is used to obtain an SQLite prepared statement handle
 ** for the statement identified by the second argument. If successful,
@@ -284,6 +287,7 @@ static int fts3SqlStmt(
 /* 25 */  "",
 
 /* 26 */ "DELETE FROM %Q.'%q_segdir' WHERE level BETWEEN ? AND ?",
+/* 27 */ "SELECT DISTINCT level / (1024 * ?) FROM %Q.'%q_segdir'",
 
   };
   int rc = SQLITE_OK;
@@ -431,6 +435,45 @@ int sqlite3Fts3ReadLock(Fts3Table *p){
 }
 
 /*
+** FTS maintains a separate indexes for each language-id (a 32-bit integer).
+** Within each language id, a separate index is maintained to store the
+** document terms, and each configured prefix size (configured the FTS 
+** "prefix=" option). And each index consists of multiple levels ("relative
+** levels").
+**
+** All three of these values (the language id, the specific index and the
+** level within the index) are encoded in 64-bit integer values stored
+** in the %_segdir table on disk. This function is used to convert three
+** separate component values into the single 64-bit integer value that
+** can be used to query the %_segdir table.
+**
+** Specifically, each language-id/index combination is allocated 1024 
+** 64-bit integer level values ("absolute levels"). The main terms index
+** for language-id 0 is allocate values 0-1023. The first prefix index
+** (if any) for language-id 0 is allocated values 1024-2047. And so on.
+** Language 1 indexes are allocated immediately following language 0.
+**
+** So, for a system with nPrefix prefix indexes configured, the block of
+** absolute levels that corresponds to language-id iLangid and index 
+** iIndex starts at absolute level ((iLangid * (nPrefix+1) + iIndex) * 1024).
+*/
+static sqlite3_int64 getAbsoluteLevel(
+  Fts3Table *p, 
+  int iLangid, 
+  int iIndex, 
+  int iLevel
+){
+  sqlite3_int64 iBase;            /* First absolute level for iLangid/iIndex */
+  assert( iLangid>=0 );
+  assert( p->nIndex>0 );
+  assert( iIndex>=0 && iIndex<p->nIndex );
+
+  iBase = ((sqlite3_int64)iLangid * p->nIndex + iIndex) * FTS3_SEGDIR_MAXLEVEL;
+  return iBase + iLevel;
+}
+
+
+/*
 ** Set *ppStmt to a statement handle that may be used to iterate through
 ** all rows in the %_segdir table, from oldest to newest. If successful,
 ** return SQLITE_OK. If an error occurs while preparing the statement, 
@@ -449,8 +492,9 @@ int sqlite3Fts3ReadLock(Fts3Table *p){
 */
 int sqlite3Fts3AllSegdirs(
   Fts3Table *p,                   /* FTS3 table */
+  int iLangid,                    /* Language being queried */
   int iIndex,                     /* Index for p->aIndex[] */
-  int iLevel,                     /* Level to select */
+  int iLevel,                     /* Level to select (relative level) */
   sqlite3_stmt **ppStmt           /* OUT: Compiled statement */
 ){
   int rc;
@@ -464,14 +508,16 @@ int sqlite3Fts3AllSegdirs(
     /* "SELECT * FROM %_segdir WHERE level BETWEEN ? AND ? ORDER BY ..." */
     rc = fts3SqlStmt(p, SQL_SELECT_LEVEL_RANGE, &pStmt, 0);
     if( rc==SQLITE_OK ){ 
-      sqlite3_bind_int(pStmt, 1, iIndex*FTS3_SEGDIR_MAXLEVEL);
-      sqlite3_bind_int(pStmt, 2, (iIndex+1)*FTS3_SEGDIR_MAXLEVEL-1);
+      sqlite3_bind_int64(pStmt, 1, getAbsoluteLevel(p, iLangid, iIndex, 0));
+      sqlite3_bind_int64(pStmt, 2, 
+          getAbsoluteLevel(p, iLangid, iIndex, FTS3_SEGDIR_MAXLEVEL-1)
+      );
     }
   }else{
     /* "SELECT * FROM %_segdir WHERE level = ? ORDER BY ..." */
     rc = fts3SqlStmt(p, SQL_SELECT_LEVEL, &pStmt, 0);
     if( rc==SQLITE_OK ){ 
-      sqlite3_bind_int(pStmt, 1, iLevel+iIndex*FTS3_SEGDIR_MAXLEVEL);
+      sqlite3_bind_int64(pStmt, 1, getAbsoluteLevel(p, iLangid, iIndex,iLevel));
     }
   }
   *ppStmt = pStmt;
@@ -637,6 +683,7 @@ static int fts3PendingTermsAddOne(
 */
 static int fts3PendingTermsAdd(
   Fts3Table *p,                   /* Table into which text will be inserted */
+  int iLangid,                    /* Language id to use */
   const char *zText,              /* Text of document to be inserted */
   int iCol,                       /* Column into which text is being inserted */
   u32 *pnWord                     /* OUT: Number of tokens inserted */
@@ -666,11 +713,10 @@ static int fts3PendingTermsAdd(
     return SQLITE_OK;
   }
 
-  rc = pModule->xOpen(pTokenizer, zText, -1, &pCsr);
+  rc = sqlite3Fts3OpenTokenizer(pTokenizer, iLangid, zText, -1, &pCsr);
   if( rc!=SQLITE_OK ){
     return rc;
   }
-  pCsr->pTokenizer = pTokenizer;
 
   xNext = pModule->xNext;
   while( SQLITE_OK==rc
@@ -713,18 +759,28 @@ static int fts3PendingTermsAdd(
 ** fts3PendingTermsAdd() are to add term/position-list pairs for the
 ** contents of the document with docid iDocid.
 */
-static int fts3PendingTermsDocid(Fts3Table *p, sqlite_int64 iDocid){
+static int fts3PendingTermsDocid(
+  Fts3Table *p,                   /* Full-text table handle */
+  int iLangid,                    /* Language id of row being written */
+  sqlite_int64 iDocid             /* Docid of row being written */
+){
+  assert( iLangid>=0 );
+
   /* TODO(shess) Explore whether partially flushing the buffer on
   ** forced-flush would provide better performance.  I suspect that if
   ** we ordered the doclists by size and flushed the largest until the
   ** buffer was half empty, that would let the less frequent terms
   ** generate longer doclists.
   */
-  if( iDocid<=p->iPrevDocid || p->nPendingData>p->nMaxPendingData ){
+  if( iDocid<=p->iPrevDocid 
+   || p->iPrevLangid!=iLangid
+   || p->nPendingData>p->nMaxPendingData 
+  ){
     int rc = sqlite3Fts3PendingTermsFlush(p);
     if( rc!=SQLITE_OK ) return rc;
   }
   p->iPrevDocid = iDocid;
+  p->iPrevLangid = iLangid;
   return SQLITE_OK;
 }
 
@@ -753,11 +809,16 @@ void sqlite3Fts3PendingTermsClear(Fts3Table *p){
 ** Argument apVal is the same as the similarly named argument passed to
 ** fts3InsertData(). Parameter iDocid is the docid of the new row.
 */
-static int fts3InsertTerms(Fts3Table *p, sqlite3_value **apVal, u32 *aSz){
+static int fts3InsertTerms(
+  Fts3Table *p, 
+  int iLangid, 
+  sqlite3_value **apVal, 
+  u32 *aSz
+){
   int i;                          /* Iterator variable */
   for(i=2; i<p->nColumn+2; i++){
     const char *zText = (const char *)sqlite3_value_text(apVal[i]);
-    int rc = fts3PendingTermsAdd(p, zText, i-2, &aSz[i-2]);
+    int rc = fts3PendingTermsAdd(p, iLangid, zText, i-2, &aSz[i-2]);
     if( rc!=SQLITE_OK ){
       return rc;
     }
@@ -778,6 +839,7 @@ static int fts3InsertTerms(Fts3Table *p, sqlite3_value **apVal, u32 *aSz){
 **   apVal[p->nColumn+1]     Right-most user-defined column
 **   apVal[p->nColumn+2]     Hidden column with same name as table
 **   apVal[p->nColumn+3]     Hidden "docid" column (alias for rowid)
+**   apVal[p->nColumn+4]     Hidden languageid column
 */
 static int fts3InsertData(
   Fts3Table *p,                   /* Full-text table */
@@ -808,9 +870,13 @@ static int fts3InsertData(
   ** defined columns in the FTS3 table, plus one for the docid field.
   */
   rc = fts3SqlStmt(p, SQL_CONTENT_INSERT, &pContentInsert, &apVal[1]);
-  if( rc!=SQLITE_OK ){
-    return rc;
+  if( rc==SQLITE_OK && p->zLanguageid ){
+    rc = sqlite3_bind_int(
+        pContentInsert, p->nColumn+2, 
+        sqlite3_value_int(apVal[p->nColumn+4])
+    );
   }
+  if( rc!=SQLITE_OK ) return rc;
 
   /* There is a quirk here. The users INSERT statement may have specified
   ** a value for the "rowid" field, for the "docid" field, or for both.
@@ -871,6 +937,15 @@ static int fts3DeleteAll(Fts3Table *p, int bContent){
 }
 
 /*
+**
+*/
+static int langidFromSelect(Fts3Table *p, sqlite3_stmt *pSelect){
+  int iLangid = 0;
+  if( p->zLanguageid ) iLangid = sqlite3_column_int(pSelect, p->nColumn+1);
+  return iLangid;
+}
+
+/*
 ** The first element in the apVal[] array is assumed to contain the docid
 ** (an integer) of a row about to be deleted. Remove all terms from the
 ** full-text index.
@@ -889,15 +964,17 @@ static void fts3DeleteTerms(
   if( rc==SQLITE_OK ){
     if( SQLITE_ROW==sqlite3_step(pSelect) ){
       int i;
-      for(i=1; i<=p->nColumn; i++){
+      int iLangid = langidFromSelect(p, pSelect);
+      rc = fts3PendingTermsDocid(p, iLangid, sqlite3_column_int64(pSelect, 0));
+      for(i=1; rc==SQLITE_OK && i<=p->nColumn; i++){
         const char *zText = (const char *)sqlite3_column_text(pSelect, i);
-        rc = fts3PendingTermsAdd(p, zText, -1, &aSz[i-1]);
-        if( rc!=SQLITE_OK ){
-          sqlite3_reset(pSelect);
-          *pRC = rc;
-          return;
-        }
+        rc = fts3PendingTermsAdd(p, iLangid, zText, -1, &aSz[i-1]);
         aSz[p->nColumn] += sqlite3_column_bytes(pSelect, i);
+      }
+      if( rc!=SQLITE_OK ){
+        sqlite3_reset(pSelect);
+        *pRC = rc;
+        return;
       }
     }
     rc = sqlite3_reset(pSelect);
@@ -911,7 +988,7 @@ static void fts3DeleteTerms(
 ** Forward declaration to account for the circular dependency between
 ** functions fts3SegmentMerge() and fts3AllocateSegdirIdx().
 */
-static int fts3SegmentMerge(Fts3Table *, int, int);
+static int fts3SegmentMerge(Fts3Table *, int, int, int);
 
 /* 
 ** This function allocates a new level iLevel index in the segdir table.
@@ -930,6 +1007,7 @@ static int fts3SegmentMerge(Fts3Table *, int, int);
 */
 static int fts3AllocateSegdirIdx(
   Fts3Table *p, 
+  int iLangid,                    /* Language id */
   int iIndex,                     /* Index for p->aIndex */
   int iLevel, 
   int *piIdx
@@ -938,10 +1016,15 @@ static int fts3AllocateSegdirIdx(
   sqlite3_stmt *pNextIdx;         /* Query for next idx at level iLevel */
   int iNext = 0;                  /* Result of query pNextIdx */
 
+  assert( iLangid>=0 );
+  assert( p->nIndex>=1 );
+
   /* Set variable iNext to the next available segdir index at level iLevel. */
   rc = fts3SqlStmt(p, SQL_NEXT_SEGMENT_INDEX, &pNextIdx, 0);
   if( rc==SQLITE_OK ){
-    sqlite3_bind_int(pNextIdx, 1, iIndex*FTS3_SEGDIR_MAXLEVEL + iLevel);
+    sqlite3_bind_int64(
+        pNextIdx, 1, getAbsoluteLevel(p, iLangid, iIndex, iLevel)
+    );
     if( SQLITE_ROW==sqlite3_step(pNextIdx) ){
       iNext = sqlite3_column_int(pNextIdx, 0);
     }
@@ -955,7 +1038,7 @@ static int fts3AllocateSegdirIdx(
     ** if iNext is less than FTS3_MERGE_COUNT, allocate index iNext.
     */
     if( iNext>=FTS3_MERGE_COUNT ){
-      rc = fts3SegmentMerge(p, iIndex, iLevel);
+      rc = fts3SegmentMerge(p, iLangid, iIndex, iLevel);
       *piIdx = 0;
     }else{
       *piIdx = iNext;
@@ -1089,6 +1172,18 @@ static int fts3SegReaderRequire(Fts3SegReader *pReader, char *pFrom, int nByte){
 }
 
 /*
+** Set an Fts3SegReader cursor to point at EOF.
+*/
+static void fts3SegReaderSetEof(Fts3SegReader *pSeg){
+  if( !fts3SegReaderIsRootOnly(pSeg) ){
+    sqlite3_free(pSeg->aNode);
+    sqlite3_blob_close(pSeg->pBlob);
+    pSeg->pBlob = 0;
+  }
+  pSeg->aNode = 0;
+}
+
+/*
 ** Move the iterator passed as the first argument to the next term in the
 ** segment. If successful, SQLITE_OK is returned. If there is no next term,
 ** SQLITE_DONE. Otherwise, an SQLite error code.
@@ -1127,12 +1222,7 @@ static int fts3SegReaderNext(
       return SQLITE_OK;
     }
 
-    if( !fts3SegReaderIsRootOnly(pReader) ){
-      sqlite3_free(pReader->aNode);
-      sqlite3_blob_close(pReader->pBlob);
-      pReader->pBlob = 0;
-    }
-    pReader->aNode = 0;
+    fts3SegReaderSetEof(pReader);
 
     /* If iCurrentBlock>=iLeafEndBlock, this is an EOF condition. All leaf 
     ** blocks have already been traversed.  */
@@ -1379,6 +1469,7 @@ void sqlite3Fts3SegReaderFree(Fts3SegReader *pReader){
 */
 int sqlite3Fts3SegReaderNew(
   int iAge,                       /* Segment "age". */
+  int bLookup,                    /* True for a lookup only */
   sqlite3_int64 iStartLeaf,       /* First leaf to traverse */
   sqlite3_int64 iEndLeaf,         /* Final leaf to traverse */
   sqlite3_int64 iEndBlock,        /* Final block of segment */
@@ -1386,7 +1477,6 @@ int sqlite3Fts3SegReaderNew(
   int nRoot,                      /* Size of buffer containing root node */
   Fts3SegReader **ppReader        /* OUT: Allocated Fts3SegReader */
 ){
-  int rc = SQLITE_OK;             /* Return code */
   Fts3SegReader *pReader;         /* Newly allocated SegReader object */
   int nExtra = 0;                 /* Bytes to allocate segment root node */
 
@@ -1401,6 +1491,7 @@ int sqlite3Fts3SegReaderNew(
   }
   memset(pReader, 0, sizeof(Fts3SegReader));
   pReader->iIdx = iAge;
+  pReader->bLookup = bLookup;
   pReader->iStartBlock = iStartLeaf;
   pReader->iLeafEndBlock = iEndLeaf;
   pReader->iEndBlock = iEndBlock;
@@ -1414,13 +1505,8 @@ int sqlite3Fts3SegReaderNew(
   }else{
     pReader->iCurrentBlock = iStartLeaf-1;
   }
-
-  if( rc==SQLITE_OK ){
-    *ppReader = pReader;
-  }else{
-    sqlite3Fts3SegReaderFree(pReader);
-  }
-  return rc;
+  *ppReader = pReader;
+  return SQLITE_OK;
 }
 
 /*
@@ -1470,6 +1556,7 @@ int sqlite3Fts3SegReaderPending(
   Fts3SegReader **ppReader        /* OUT: SegReader for pending-terms */
 ){
   Fts3SegReader *pReader = 0;     /* Fts3SegReader object to return */
+  Fts3HashElem *pE;               /* Iterator variable */
   Fts3HashElem **aElem = 0;       /* Array of term hash entries to scan */
   int nElem = 0;                  /* Size of array at aElem */
   int rc = SQLITE_OK;             /* Return Code */
@@ -1478,7 +1565,6 @@ int sqlite3Fts3SegReaderPending(
   pHash = &p->aIndex[iIndex].hPending;
   if( bPrefix ){
     int nAlloc = 0;               /* Size of allocated array at aElem */
-    Fts3HashElem *pE = 0;         /* Iterator variable */
 
     for(pE=fts3HashFirst(pHash); pE; pE=fts3HashNext(pE)){
       char *zKey = (char *)fts3HashKey(pE);
@@ -1512,8 +1598,13 @@ int sqlite3Fts3SegReaderPending(
 
   }else{
     /* The query is a simple term lookup that matches at most one term in
-    ** the index. All that is required is a straight hash-lookup. */
-    Fts3HashElem *pE = fts3HashFindElem(pHash, zTerm, nTerm);
+    ** the index. All that is required is a straight hash-lookup. 
+    **
+    ** Because the stack address of pE may be accessed via the aElem pointer
+    ** below, the "Fts3HashElem *pE" must be declared so that it is valid
+    ** within this entire function, not just this "else{...}" block.
+    */
+    pE = fts3HashFindElem(pHash, zTerm, nTerm);
     if( pE ){
       aElem = &pE;
       nElem = 1;
@@ -1698,7 +1789,7 @@ static int fts3WriteSegment(
 */
 static int fts3WriteSegdir(
   Fts3Table *p,                   /* Virtual table handle */
-  int iLevel,                     /* Value for "level" field */
+  sqlite3_int64 iLevel,           /* Value for "level" field (absolute level) */
   int iIdx,                       /* Value for "idx" field */
   sqlite3_int64 iStartBlock,      /* Value for "start_block" field */
   sqlite3_int64 iLeafEndBlock,    /* Value for "leaves_end_block" field */
@@ -1709,7 +1800,7 @@ static int fts3WriteSegdir(
   sqlite3_stmt *pStmt;
   int rc = fts3SqlStmt(p, SQL_INSERT_SEGDIR, &pStmt, 0);
   if( rc==SQLITE_OK ){
-    sqlite3_bind_int(pStmt, 1, iLevel);
+    sqlite3_bind_int64(pStmt, 1, iLevel);
     sqlite3_bind_int(pStmt, 2, iIdx);
     sqlite3_bind_int64(pStmt, 3, iStartBlock);
     sqlite3_bind_int64(pStmt, 4, iLeafEndBlock);
@@ -2092,7 +2183,7 @@ static int fts3SegWriterAdd(
 static int fts3SegWriterFlush(
   Fts3Table *p,                   /* Virtual table handle */
   SegmentWriter *pWriter,         /* SegmentWriter to flush to the db */
-  int iLevel,                     /* Value for 'level' column of %_segdir */
+  sqlite3_int64 iLevel,           /* Value for 'level' column of %_segdir */
   int iIdx                        /* Value for 'idx' column of %_segdir */
 ){
   int rc;                         /* Return code */
@@ -2170,7 +2261,12 @@ static int fts3IsEmpty(Fts3Table *p, sqlite3_value *pRowid, int *pisEmpty){
 **
 ** Return SQLITE_OK if successful, or an SQLite error code if not.
 */
-static int fts3SegmentMaxLevel(Fts3Table *p, int iIndex, int *pnMax){
+static int fts3SegmentMaxLevel(
+  Fts3Table *p, 
+  int iLangid,
+  int iIndex, 
+  sqlite3_int64 *pnMax
+){
   sqlite3_stmt *pStmt;
   int rc;
   assert( iIndex>=0 && iIndex<p->nIndex );
@@ -2183,10 +2279,12 @@ static int fts3SegmentMaxLevel(Fts3Table *p, int iIndex, int *pnMax){
   */
   rc = fts3SqlStmt(p, SQL_SELECT_SEGDIR_MAX_LEVEL, &pStmt, 0);
   if( rc!=SQLITE_OK ) return rc;
-  sqlite3_bind_int(pStmt, 1, iIndex*FTS3_SEGDIR_MAXLEVEL);
-  sqlite3_bind_int(pStmt, 2, (iIndex+1)*FTS3_SEGDIR_MAXLEVEL - 1);
+  sqlite3_bind_int64(pStmt, 1, getAbsoluteLevel(p, iLangid, iIndex, 0));
+  sqlite3_bind_int64(pStmt, 2, 
+      getAbsoluteLevel(p, iLangid, iIndex, FTS3_SEGDIR_MAXLEVEL-1)
+  );
   if( SQLITE_ROW==sqlite3_step(pStmt) ){
-    *pnMax = sqlite3_column_int(pStmt, 0);
+    *pnMax = sqlite3_column_int64(pStmt, 0);
   }
   return sqlite3_reset(pStmt);
 }
@@ -2207,6 +2305,7 @@ static int fts3SegmentMaxLevel(Fts3Table *p, int iIndex, int *pnMax){
 */
 static int fts3DeleteSegdir(
   Fts3Table *p,                   /* Virtual table handle */
+  int iLangid,                    /* Language id */
   int iIndex,                     /* Index for p->aIndex */
   int iLevel,                     /* Level of %_segdir entries to delete */
   Fts3SegReader **apSegment,      /* Array of SegReader objects */
@@ -2234,13 +2333,17 @@ static int fts3DeleteSegdir(
   if( iLevel==FTS3_SEGCURSOR_ALL ){
     rc = fts3SqlStmt(p, SQL_DELETE_SEGDIR_RANGE, &pDelete, 0);
     if( rc==SQLITE_OK ){
-      sqlite3_bind_int(pDelete, 1, iIndex*FTS3_SEGDIR_MAXLEVEL);
-      sqlite3_bind_int(pDelete, 2, (iIndex+1) * FTS3_SEGDIR_MAXLEVEL - 1);
+      sqlite3_bind_int64(pDelete, 1, getAbsoluteLevel(p, iLangid, iIndex, 0));
+      sqlite3_bind_int64(pDelete, 2, 
+          getAbsoluteLevel(p, iLangid, iIndex, FTS3_SEGDIR_MAXLEVEL-1)
+      );
     }
   }else{
     rc = fts3SqlStmt(p, SQL_DELETE_SEGDIR_LEVEL, &pDelete, 0);
     if( rc==SQLITE_OK ){
-      sqlite3_bind_int(pDelete, 1, iIndex*FTS3_SEGDIR_MAXLEVEL + iLevel);
+      sqlite3_bind_int64(
+          pDelete, 1, getAbsoluteLevel(p, iLangid, iIndex, iLevel)
+      );
     }
   }
 
@@ -2403,11 +2506,16 @@ static int fts3SegReaderStart(
   ** b-tree leaf nodes contain more than one term.
   */
   for(i=0; pCsr->bRestart==0 && i<pCsr->nSegment; i++){
+    int res = 0;
     Fts3SegReader *pSeg = pCsr->apSegment[i];
     do {
       int rc = fts3SegReaderNext(p, pSeg, 0);
       if( rc!=SQLITE_OK ) return rc;
-    }while( zTerm && fts3SegReaderTermCmp(pSeg, zTerm, nTerm)<0 );
+    }while( zTerm && (res = fts3SegReaderTermCmp(pSeg, zTerm, nTerm))<0 );
+
+    if( pSeg->bLookup && res!=0 ){
+      fts3SegReaderSetEof(pSeg);
+    }
   }
   fts3SegReaderSort(pCsr->apSegment, nSeg, nSeg, fts3SegReaderCmp);
 
@@ -2528,7 +2636,12 @@ int sqlite3Fts3SegReaderStep(
     ** forward. Then sort the list in order of current term again.  
     */
     for(i=0; i<pCsr->nAdvance; i++){
-      rc = fts3SegReaderNext(p, apSegment[i], 0);
+      Fts3SegReader *pSeg = apSegment[i];
+      if( pSeg->bLookup ){
+        fts3SegReaderSetEof(pSeg);
+      }else{
+        rc = fts3SegReaderNext(p, pSeg, 0);
+      }
       if( rc!=SQLITE_OK ) return rc;
     }
     fts3SegReaderSort(apSegment, nSegment, pCsr->nAdvance, fts3SegReaderCmp);
@@ -2699,13 +2812,18 @@ void sqlite3Fts3SegReaderFinish(
 ** Otherwise, if successful, SQLITE_OK is returned. If an error occurs, 
 ** an SQLite error code is returned.
 */
-static int fts3SegmentMerge(Fts3Table *p, int iIndex, int iLevel){
+static int fts3SegmentMerge(
+  Fts3Table *p, 
+  int iLangid,                    /* Language id to merge */
+  int iIndex,                     /* Index in p->aIndex[] to merge */
+  int iLevel                      /* Level to merge */
+){
   int rc;                         /* Return code */
   int iIdx = 0;                   /* Index of new segment */
-  int iNewLevel = 0;              /* Level/index to create new segment at */
+  sqlite3_int64 iNewLevel = 0;    /* Level/index to create new segment at */
   SegmentWriter *pWriter = 0;     /* Used to write the new, merged, segment */
   Fts3SegFilter filter;           /* Segment term filter condition */
-  Fts3MultiSegReader csr;        /* Cursor to iterate through level(s) */
+  Fts3MultiSegReader csr;         /* Cursor to iterate through level(s) */
   int bIgnoreEmpty = 0;           /* True to ignore empty segments */
 
   assert( iLevel==FTS3_SEGCURSOR_ALL
@@ -2715,7 +2833,7 @@ static int fts3SegmentMerge(Fts3Table *p, int iIndex, int iLevel){
   assert( iLevel<FTS3_SEGDIR_MAXLEVEL );
   assert( iIndex>=0 && iIndex<p->nIndex );
 
-  rc = sqlite3Fts3SegReaderCursor(p, iIndex, iLevel, 0, 0, 1, 0, &csr);
+  rc = sqlite3Fts3SegReaderCursor(p, iLangid, iIndex, iLevel, 0, 0, 1, 0, &csr);
   if( rc!=SQLITE_OK || csr.nSegment==0 ) goto finished;
 
   if( iLevel==FTS3_SEGCURSOR_ALL ){
@@ -2727,24 +2845,24 @@ static int fts3SegmentMerge(Fts3Table *p, int iIndex, int iLevel){
       rc = SQLITE_DONE;
       goto finished;
     }
-    rc = fts3SegmentMaxLevel(p, iIndex, &iNewLevel);
+    rc = fts3SegmentMaxLevel(p, iLangid, iIndex, &iNewLevel);
     bIgnoreEmpty = 1;
 
   }else if( iLevel==FTS3_SEGCURSOR_PENDING ){
-    iNewLevel = iIndex * FTS3_SEGDIR_MAXLEVEL; 
-    rc = fts3AllocateSegdirIdx(p, iIndex, 0, &iIdx);
+    iNewLevel = getAbsoluteLevel(p, iLangid, iIndex, 0);
+    rc = fts3AllocateSegdirIdx(p, iLangid, iIndex, 0, &iIdx);
   }else{
     /* This call is to merge all segments at level iLevel. find the next
     ** available segment index at level iLevel+1. The call to
     ** fts3AllocateSegdirIdx() will merge the segments at level iLevel+1 to 
     ** a single iLevel+2 segment if necessary.  */
-    rc = fts3AllocateSegdirIdx(p, iIndex, iLevel+1, &iIdx);
-    iNewLevel = iIndex * FTS3_SEGDIR_MAXLEVEL + iLevel+1;
+    rc = fts3AllocateSegdirIdx(p, iLangid, iIndex, iLevel+1, &iIdx);
+    iNewLevel = getAbsoluteLevel(p, iLangid, iIndex, iLevel+1);
   }
   if( rc!=SQLITE_OK ) goto finished;
   assert( csr.nSegment>0 );
-  assert( iNewLevel>=(iIndex*FTS3_SEGDIR_MAXLEVEL) );
-  assert( iNewLevel<((iIndex+1)*FTS3_SEGDIR_MAXLEVEL) );
+  assert( iNewLevel>=getAbsoluteLevel(p, iLangid, iIndex, 0) );
+  assert( iNewLevel<getAbsoluteLevel(p, iLangid, iIndex,FTS3_SEGDIR_MAXLEVEL) );
 
   memset(&filter, 0, sizeof(Fts3SegFilter));
   filter.flags = FTS3_SEGMENT_REQUIRE_POS;
@@ -2761,7 +2879,9 @@ static int fts3SegmentMerge(Fts3Table *p, int iIndex, int iLevel){
   assert( pWriter );
 
   if( iLevel!=FTS3_SEGCURSOR_PENDING ){
-    rc = fts3DeleteSegdir(p, iIndex, iLevel, csr.apSegment, csr.nSegment);
+    rc = fts3DeleteSegdir(
+        p, iLangid, iIndex, iLevel, csr.apSegment, csr.nSegment
+    );
     if( rc!=SQLITE_OK ) goto finished;
   }
   rc = fts3SegWriterFlush(p, pWriter, iNewLevel, iIdx);
@@ -2780,7 +2900,7 @@ int sqlite3Fts3PendingTermsFlush(Fts3Table *p){
   int rc = SQLITE_OK;
   int i;
   for(i=0; rc==SQLITE_OK && i<p->nIndex; i++){
-    rc = fts3SegmentMerge(p, i, FTS3_SEGCURSOR_PENDING);
+    rc = fts3SegmentMerge(p, p->iPrevLangid, i, FTS3_SEGCURSOR_PENDING);
     if( rc==SQLITE_DONE ) rc = SQLITE_OK;
   }
   sqlite3Fts3PendingTermsClear(p);
@@ -2935,17 +3055,34 @@ static void fts3UpdateDocTotals(
   sqlite3_free(a);
 }
 
+/*
+** Merge the entire database so that there is one segment for each 
+** iIndex/iLangid combination.
+*/
 static int fts3DoOptimize(Fts3Table *p, int bReturnDone){
-  int i;
   int bSeenDone = 0;
-  int rc = SQLITE_OK;
-  for(i=0; rc==SQLITE_OK && i<p->nIndex; i++){
-    rc = fts3SegmentMerge(p, i, FTS3_SEGCURSOR_ALL);
-    if( rc==SQLITE_DONE ){
-      bSeenDone = 1;
-      rc = SQLITE_OK;
+  int rc;
+  sqlite3_stmt *pAllLangid = 0;
+
+  rc = fts3SqlStmt(p, SQL_SELECT_ALL_LANGID, &pAllLangid, 0);
+  if( rc==SQLITE_OK ){
+    int rc2;
+    sqlite3_bind_int(pAllLangid, 1, p->nIndex);
+    while( sqlite3_step(pAllLangid)==SQLITE_ROW ){
+      int i;
+      int iLangid = sqlite3_column_int(pAllLangid, 0);
+      for(i=0; rc==SQLITE_OK && i<p->nIndex; i++){
+        rc = fts3SegmentMerge(p, iLangid, i, FTS3_SEGCURSOR_ALL);
+        if( rc==SQLITE_DONE ){
+          bSeenDone = 1;
+          rc = SQLITE_OK;
+        }
+      }
     }
+    rc2 = sqlite3_reset(pAllLangid);
+    if( rc==SQLITE_OK ) rc = rc2;
   }
+
   sqlite3Fts3SegmentsClose(p);
   sqlite3Fts3PendingTermsClear(p);
 
@@ -2996,11 +3133,12 @@ static int fts3DoRebuild(Fts3Table *p){
 
     while( rc==SQLITE_OK && SQLITE_ROW==sqlite3_step(pStmt) ){
       int iCol;
-      rc = fts3PendingTermsDocid(p, sqlite3_column_int64(pStmt, 0));
+      int iLangid = langidFromSelect(p, pStmt);
+      rc = fts3PendingTermsDocid(p, iLangid, sqlite3_column_int64(pStmt, 0));
       aSz[p->nColumn] = 0;
       for(iCol=0; rc==SQLITE_OK && iCol<p->nColumn; iCol++){
         const char *z = (const char *) sqlite3_column_text(pStmt, iCol+1);
-        rc = fts3PendingTermsAdd(p, z, iCol, &aSz[iCol]);
+        rc = fts3PendingTermsAdd(p, iLangid, z, iCol, &aSz[iCol]);
         aSz[p->nColumn] += sqlite3_column_bytes(pStmt, iCol+1);
       }
       if( p->bHasDocsize ){
@@ -3119,14 +3257,13 @@ int sqlite3Fts3CacheDeferredDoclists(Fts3Cursor *pCsr){
       const char *zText = (const char *)sqlite3_column_text(pCsr->pStmt, i+1);
       sqlite3_tokenizer_cursor *pTC = 0;
   
-      rc = pModule->xOpen(pT, zText, -1, &pTC);
+      rc = sqlite3Fts3OpenTokenizer(pT, pCsr->iLangid, zText, -1, &pTC);
       while( rc==SQLITE_OK ){
         char const *zToken;       /* Buffer containing token */
         int nToken;               /* Number of bytes in token */
         int iDum1, iDum2;         /* Dummy variables */
         int iPos;                 /* Position of token in zText */
   
-        pTC->pTokenizer = pT;
         rc = pModule->xNext(pTC, &zToken, &nToken, &iDum1, &iDum2, &iPos);
         for(pDef=pCsr->pDeferred; pDef && rc==SQLITE_OK; pDef=pDef->pNext){
           Fts3PhraseToken *pPT = pDef->pToken;
@@ -3226,8 +3363,6 @@ static int fts3DeleteByRowid(
       rc = fts3DeleteAll(p, 1);
       *pnDoc = *pnDoc - 1;
     }else{
-      sqlite3_int64 iRemove = sqlite3_value_int64(pRowid);
-      rc = fts3PendingTermsDocid(p, iRemove);
       fts3DeleteTerms(&rc, p, pRowid, aSzDel);
       if( p->zContentTbl==0 ){
         fts3SqlExec(&rc, p, SQL_DELETE_CONTENT, &pRowid);
@@ -3246,7 +3381,16 @@ static int fts3DeleteByRowid(
 
 /*
 ** This function does the work for the xUpdate method of FTS3 virtual
-** tables.
+** tables. The schema of the virtual table being:
+**
+**     CREATE TABLE <table name>( 
+**       <user COLUMns>,
+**       <table name> HIDDEN, 
+**       docid HIDDEN, 
+**       <langid> HIDDEN
+**     );
+**
+** 
 */
 int sqlite3Fts3UpdateMethod(
   sqlite3_vtab *pVtab,            /* FTS3 vtab object */
@@ -3263,6 +3407,10 @@ int sqlite3Fts3UpdateMethod(
   int bInsertDone = 0;
 
   assert( p->pSegments==0 );
+  assert( 
+      nArg==1                     /* DELETE operations */
+   || nArg==(2 + p->nColumn + 3)  /* INSERT or UPDATE operations */
+  );
 
   /* Check for a "special" INSERT operation. One of the form:
   **
@@ -3273,6 +3421,11 @@ int sqlite3Fts3UpdateMethod(
    && sqlite3_value_type(apVal[p->nColumn+2])!=SQLITE_NULL 
   ){
     rc = fts3SpecialInsert(p, apVal[p->nColumn+2]);
+    goto update_out;
+  }
+
+  if( nArg>1 && sqlite3_value_int(apVal[2 + p->nColumn + 2])<0 ){
+    rc = SQLITE_CONSTRAINT;
     goto update_out;
   }
 
@@ -3343,6 +3496,7 @@ int sqlite3Fts3UpdateMethod(
   
   /* If this is an INSERT or UPDATE operation, insert the new record. */
   if( nArg>1 && rc==SQLITE_OK ){
+    int iLangid = sqlite3_value_int(apVal[2 + p->nColumn + 2]);
     if( bInsertDone==0 ){
       rc = fts3InsertData(p, apVal, pRowid);
       if( rc==SQLITE_CONSTRAINT && p->zContentTbl==0 ){
@@ -3350,11 +3504,11 @@ int sqlite3Fts3UpdateMethod(
       }
     }
     if( rc==SQLITE_OK && (!isRemove || *pRowid!=p->iPrevDocid ) ){
-      rc = fts3PendingTermsDocid(p, *pRowid);
+      rc = fts3PendingTermsDocid(p, iLangid, *pRowid);
     }
     if( rc==SQLITE_OK ){
       assert( p->iPrevDocid==*pRowid );
-      rc = fts3InsertTerms(p, apVal, aSzIns);
+      rc = fts3InsertTerms(p, iLangid, apVal, aSzIns);
     }
     if( p->bHasDocsize ){
       fts3InsertDocsize(&rc, p, aSzIns);

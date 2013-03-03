@@ -286,10 +286,6 @@
 ** will eventually overtake the earlier data and knock it out.  The
 ** query logic likewise merges doclists so that newer data knocks out
 ** older data.
-**
-** TODO(shess) Provide a VACUUM type operation to clear out all
-** deletions and duplications.  This would basically be a forced merge
-** into a single segment.
 */
 
 #include "fts3Int.h"
@@ -469,6 +465,7 @@ static int fts3DisconnectMethod(sqlite3_vtab *pVtab){
   sqlite3_free(p->zReadExprlist);
   sqlite3_free(p->zWriteExprlist);
   sqlite3_free(p->zContentTbl);
+  sqlite3_free(p->zLanguageid);
 
   /* Invoke the tokenizer destructor to free the tokenizer. */
   p->pTokenizer->pModule->xDestroy(p->pTokenizer);
@@ -545,7 +542,9 @@ static void fts3DeclareVtab(int *pRc, Fts3Table *p){
     int rc;                       /* Return code */
     char *zSql;                   /* SQL statement passed to declare_vtab() */
     char *zCols;                  /* List of user defined columns */
+    const char *zLanguageid;
 
+    zLanguageid = (p->zLanguageid ? p->zLanguageid : "__langid");
     sqlite3_vtab_config(p->db, SQLITE_VTAB_CONSTRAINT_SUPPORT, 1);
 
     /* Create a list of user columns for the virtual table */
@@ -556,7 +555,8 @@ static void fts3DeclareVtab(int *pRc, Fts3Table *p){
 
     /* Create the whole "CREATE TABLE" statement to pass to SQLite */
     zSql = sqlite3_mprintf(
-        "CREATE TABLE x(%s %Q HIDDEN, docid HIDDEN)", zCols, p->zName
+        "CREATE TABLE x(%s %Q HIDDEN, docid HIDDEN, %Q HIDDEN)", 
+        zCols, p->zName, zLanguageid
     );
     if( !zCols || !zSql ){
       rc = SQLITE_NOMEM;
@@ -585,6 +585,7 @@ static int fts3CreateTables(Fts3Table *p){
   sqlite3 *db = p->db;            /* The database connection */
 
   if( p->zContentTbl==0 ){
+    const char *zLanguageid = p->zLanguageid;
     char *zContentCols;           /* Columns of %_content table */
 
     /* Create a list of user columns for the content table */
@@ -592,6 +593,9 @@ static int fts3CreateTables(Fts3Table *p){
     for(i=0; zContentCols && i<p->nColumn; i++){
       char *z = p->azColumn[i];
       zContentCols = sqlite3_mprintf("%z, 'c%d%q'", zContentCols, i, z);
+    }
+    if( zLanguageid && zContentCols ){
+      zContentCols = sqlite3_mprintf("%z, langid", zContentCols, zLanguageid);
     }
     if( zContentCols==0 ) rc = SQLITE_NOMEM;
   
@@ -712,6 +716,7 @@ static void fts3Appendf(
     char *z;
     va_start(ap, zFormat);
     z = sqlite3_vmprintf(zFormat, ap);
+    va_end(ap);
     if( z && *pz ){
       char *z2 = sqlite3_mprintf("%s%s", *pz, z);
       sqlite3_free(z);
@@ -736,7 +741,7 @@ static void fts3Appendf(
 static char *fts3QuoteId(char const *zInput){
   int nRet;
   char *zRet;
-  nRet = 2 + strlen(zInput)*2 + 1;
+  nRet = 2 + (int)strlen(zInput)*2 + 1;
   zRet = sqlite3_malloc(nRet);
   if( zRet ){
     int i;
@@ -791,14 +796,20 @@ static char *fts3ReadExprList(Fts3Table *p, const char *zFunc, int *pRc){
     for(i=0; i<p->nColumn; i++){
       fts3Appendf(pRc, &zRet, ",%s(x.'c%d%q')", zFunction, i, p->azColumn[i]);
     }
+    if( p->zLanguageid ){
+      fts3Appendf(pRc, &zRet, ", x.%Q", "langid");
+    }
     sqlite3_free(zFree);
   }else{
     fts3Appendf(pRc, &zRet, "rowid");
     for(i=0; i<p->nColumn; i++){
       fts3Appendf(pRc, &zRet, ", x.'%q'", p->azColumn[i]);
     }
+    if( p->zLanguageid ){
+      fts3Appendf(pRc, &zRet, ", x.%Q", p->zLanguageid);
+    }
   }
-  fts3Appendf(pRc, &zRet, "FROM '%q'.'%q%s' AS x", 
+  fts3Appendf(pRc, &zRet, " FROM '%q'.'%q%s' AS x", 
       p->zDb,
       (p->zContentTbl ? p->zContentTbl : p->zName),
       (p->zContentTbl ? "" : "_content")
@@ -840,6 +851,9 @@ static char *fts3WriteExprList(Fts3Table *p, const char *zFunc, int *pRc){
   fts3Appendf(pRc, &zRet, "?");
   for(i=0; i<p->nColumn; i++){
     fts3Appendf(pRc, &zRet, ",%s(?)", zFunction);
+  }
+  if( p->zLanguageid ){
+    fts3Appendf(pRc, &zRet, ", ?");
   }
   sqlite3_free(zFree);
   return zRet;
@@ -983,7 +997,7 @@ static int fts3ContentColumns(
     nCol = sqlite3_column_count(pStmt);
     for(i=0; i<nCol; i++){
       const char *zCol = sqlite3_column_name(pStmt, i);
-      nStr += strlen(zCol) + 1;
+      nStr += (int)strlen(zCol) + 1;
     }
 
     /* Allocate and populate the array to return. */
@@ -994,7 +1008,7 @@ static int fts3ContentColumns(
       char *p = (char *)&azCol[nCol];
       for(i=0; i<nCol; i++){
         const char *zCol = sqlite3_column_name(pStmt, i);
-        int n = strlen(zCol)+1;
+        int n = (int)strlen(zCol)+1;
         memcpy(p, zCol, n);
         azCol[i] = p;
         p += n;
@@ -1056,6 +1070,7 @@ static int fts3InitVtab(
   char *zCompress = 0;            /* compress=? parameter (or NULL) */
   char *zUncompress = 0;          /* uncompress=? parameter (or NULL) */
   char *zContent = 0;             /* content=? parameter (or NULL) */
+  char *zLanguageid = 0;          /* languageid=? parameter (or NULL) */
 
   assert( strlen(argv[0])==4 );
   assert( (sqlite3_strnicmp(argv[0], "fts4", 4)==0 && isFts4)
@@ -1105,7 +1120,8 @@ static int fts3InitVtab(
         { "compress",    8 },     /* 2 -> COMPRESS */
         { "uncompress", 10 },     /* 3 -> UNCOMPRESS */
         { "order",       5 },     /* 4 -> ORDER */
-        { "content",     7 }      /* 5 -> CONTENT */
+        { "content",     7 },     /* 5 -> CONTENT */
+        { "languageid", 10 }      /* 6 -> LANGUAGEID */
       };
 
       int iOpt;
@@ -1159,10 +1175,16 @@ static int fts3InitVtab(
               bDescIdx = (zVal[0]=='d' || zVal[0]=='D');
               break;
 
-            default:              /* CONTENT */
-              assert( iOpt==5 );
-              sqlite3_free(zUncompress);
+            case 5:              /* CONTENT */
+              sqlite3_free(zContent);
               zContent = zVal;
+              zVal = 0;
+              break;
+
+            case 6:              /* LANGUAGEID */
+              assert( iOpt==6 );
+              sqlite3_free(zLanguageid);
+              zLanguageid = zVal;
               zVal = 0;
               break;
           }
@@ -1194,8 +1216,21 @@ static int fts3InitVtab(
       sqlite3_free((void*)aCol); 
       aCol = 0;
       rc = fts3ContentColumns(db, argv[1], zContent, &aCol, &nCol, &nString);
+
+      /* If a languageid= option was specified, remove the language id
+      ** column from the aCol[] array. */ 
+      if( rc==SQLITE_OK && zLanguageid ){
+        int j;
+        for(j=0; j<nCol; j++){
+          if( sqlite3_stricmp(zLanguageid, aCol[j])==0 ){
+            int k;
+            for(k=j; k<nCol; k++) aCol[k] = aCol[k+1];
+            nCol--;
+            break;
+          }
+        }
+      }
     }
-    assert( rc!=SQLITE_OK || nCol>0 );
   }
   if( rc!=SQLITE_OK ) goto fts3_init_out;
 
@@ -1242,7 +1277,9 @@ static int fts3InitVtab(
   p->bHasStat = isFts4;
   p->bDescIdx = bDescIdx;
   p->zContentTbl = zContent;
+  p->zLanguageid = zLanguageid;
   zContent = 0;
+  zLanguageid = 0;
   TESTONLY( p->inTransaction = -1 );
   TESTONLY( p->mxSavepoint = -1 );
 
@@ -1305,6 +1342,7 @@ fts3_init_out:
   sqlite3_free(zCompress);
   sqlite3_free(zUncompress);
   sqlite3_free(zContent);
+  sqlite3_free(zLanguageid);
   sqlite3_free((void *)aCol);
   if( rc!=SQLITE_OK ){
     if( p ){
@@ -1356,6 +1394,7 @@ static int fts3BestIndexMethod(sqlite3_vtab *pVTab, sqlite3_index_info *pInfo){
   Fts3Table *p = (Fts3Table *)pVTab;
   int i;                          /* Iterator variable */
   int iCons = -1;                 /* Index of constraint to use */
+  int iLangidCons = -1;           /* Index of langid=x constraint, if present */
 
   /* By default use a full table scan. This is an expensive option,
   ** so search through the constraints to see if a more efficient 
@@ -1368,7 +1407,8 @@ static int fts3BestIndexMethod(sqlite3_vtab *pVTab, sqlite3_index_info *pInfo){
     if( pCons->usable==0 ) continue;
 
     /* A direct lookup on the rowid or docid column. Assign a cost of 1.0. */
-    if( pCons->op==SQLITE_INDEX_CONSTRAINT_EQ 
+    if( iCons<0 
+     && pCons->op==SQLITE_INDEX_CONSTRAINT_EQ 
      && (pCons->iColumn<0 || pCons->iColumn==p->nColumn+1 )
     ){
       pInfo->idxNum = FTS3_DOCID_SEARCH;
@@ -1391,13 +1431,22 @@ static int fts3BestIndexMethod(sqlite3_vtab *pVTab, sqlite3_index_info *pInfo){
       pInfo->idxNum = FTS3_FULLTEXT_SEARCH + pCons->iColumn;
       pInfo->estimatedCost = 2.0;
       iCons = i;
-      break;
+    }
+
+    /* Equality constraint on the langid column */
+    if( pCons->op==SQLITE_INDEX_CONSTRAINT_EQ 
+     && pCons->iColumn==p->nColumn + 2
+    ){
+      iLangidCons = i;
     }
   }
 
   if( iCons>=0 ){
     pInfo->aConstraintUsage[iCons].argvIndex = 1;
     pInfo->aConstraintUsage[iCons].omit = 1;
+  } 
+  if( iLangidCons>=0 ){
+    pInfo->aConstraintUsage[iLangidCons].argvIndex = 2;
   } 
 
   /* Regardless of the strategy selected, FTS can deliver rows in rowid (or
@@ -2282,7 +2331,7 @@ static int fts3DoclistOrMerge(
   }
 
   *paOut = aOut;
-  *pnOut = (p-aOut);
+  *pnOut = (int)(p-aOut);
   assert( *pnOut<=n1+n2+FTS3_VARINT_MAX-1 );
   return SQLITE_OK;
 }
@@ -2346,7 +2395,7 @@ static void fts3DoclistPhraseMerge(
     }
   }
 
-  *pnRight = p - aOut;
+  *pnRight = (int)(p - aOut);
 }
 
 /*
@@ -2548,6 +2597,7 @@ static int fts3SegReaderCursorAppend(
 */
 static int fts3SegReaderCursor(
   Fts3Table *p,                   /* FTS3 table handle */
+  int iLangid,                    /* Language id */
   int iIndex,                     /* Index to search (from 0 to p->nIndex-1) */
   int iLevel,                     /* Level of segments to scan */
   const char *zTerm,              /* Term to query for */
@@ -2576,7 +2626,7 @@ static int fts3SegReaderCursor(
 
   if( iLevel!=FTS3_SEGCURSOR_PENDING ){
     if( rc==SQLITE_OK ){
-      rc = sqlite3Fts3AllSegdirs(p, iIndex, iLevel, &pStmt);
+      rc = sqlite3Fts3AllSegdirs(p, iLangid, iIndex, iLevel, &pStmt);
     }
 
     while( rc==SQLITE_OK && SQLITE_ROW==(rc = sqlite3_step(pStmt)) ){
@@ -2599,7 +2649,9 @@ static int fts3SegReaderCursor(
       }
  
       rc = sqlite3Fts3SegReaderNew(pCsr->nSegment+1, 
-          iStartBlock, iLeavesEndBlock, iEndBlock, zRoot, nRoot, &pSeg
+          (isPrefix==0 && isScan==0),
+          iStartBlock, iLeavesEndBlock, 
+          iEndBlock, zRoot, nRoot, &pSeg
       );
       if( rc!=SQLITE_OK ) goto finished;
       rc = fts3SegReaderCursorAppend(pCsr, pSeg);
@@ -2619,6 +2671,7 @@ static int fts3SegReaderCursor(
 */
 int sqlite3Fts3SegReaderCursor(
   Fts3Table *p,                   /* FTS3 table handle */
+  int iLangid,
   int iIndex,                     /* Index to search (from 0 to p->nIndex-1) */
   int iLevel,                     /* Level of segments to scan */
   const char *zTerm,              /* Term to query for */
@@ -2643,7 +2696,7 @@ int sqlite3Fts3SegReaderCursor(
   memset(pCsr, 0, sizeof(Fts3MultiSegReader));
 
   return fts3SegReaderCursor(
-      p, iIndex, iLevel, zTerm, nTerm, isPrefix, isScan, pCsr
+      p, iLangid, iIndex, iLevel, zTerm, nTerm, isPrefix, isScan, pCsr
   );
 }
 
@@ -2655,11 +2708,14 @@ int sqlite3Fts3SegReaderCursor(
 */
 static int fts3SegReaderCursorAddZero(
   Fts3Table *p,                   /* FTS virtual table handle */
+  int iLangid,
   const char *zTerm,              /* Term to scan doclist of */
   int nTerm,                      /* Number of bytes in zTerm */
   Fts3MultiSegReader *pCsr        /* Fts3MultiSegReader to modify */
 ){
-  return fts3SegReaderCursor(p, 0, FTS3_SEGCURSOR_ALL, zTerm, nTerm, 0, 0,pCsr);
+  return fts3SegReaderCursor(p, 
+      iLangid, 0, FTS3_SEGCURSOR_ALL, zTerm, nTerm, 0, 0,pCsr
+  );
 }
 
 /*
@@ -2695,8 +2751,9 @@ static int fts3TermSegReaderCursor(
       for(i=1; bFound==0 && i<p->nIndex; i++){
         if( p->aIndex[i].nPrefix==nTerm ){
           bFound = 1;
-          rc = sqlite3Fts3SegReaderCursor(
-              p, i, FTS3_SEGCURSOR_ALL, zTerm, nTerm, 0, 0, pSegcsr);
+          rc = sqlite3Fts3SegReaderCursor(p, pCsr->iLangid, 
+              i, FTS3_SEGCURSOR_ALL, zTerm, nTerm, 0, 0, pSegcsr
+          );
           pSegcsr->bLookup = 1;
         }
       }
@@ -2704,19 +2761,21 @@ static int fts3TermSegReaderCursor(
       for(i=1; bFound==0 && i<p->nIndex; i++){
         if( p->aIndex[i].nPrefix==nTerm+1 ){
           bFound = 1;
-          rc = sqlite3Fts3SegReaderCursor(
-              p, i, FTS3_SEGCURSOR_ALL, zTerm, nTerm, 1, 0, pSegcsr
+          rc = sqlite3Fts3SegReaderCursor(p, pCsr->iLangid, 
+              i, FTS3_SEGCURSOR_ALL, zTerm, nTerm, 1, 0, pSegcsr
           );
           if( rc==SQLITE_OK ){
-            rc = fts3SegReaderCursorAddZero(p, zTerm, nTerm, pSegcsr);
+            rc = fts3SegReaderCursorAddZero(
+                p, pCsr->iLangid, zTerm, nTerm, pSegcsr
+            );
           }
         }
       }
     }
 
     if( bFound==0 ){
-      rc = sqlite3Fts3SegReaderCursor(
-          p, 0, FTS3_SEGCURSOR_ALL, zTerm, nTerm, isPrefix, 0, pSegcsr
+      rc = sqlite3Fts3SegReaderCursor(p, pCsr->iLangid, 
+          0, FTS3_SEGCURSOR_ALL, zTerm, nTerm, isPrefix, 0, pSegcsr
       );
       pSegcsr->bLookup = !isPrefix;
     }
@@ -2871,7 +2930,7 @@ static int fts3FilterMethod(
   UNUSED_PARAMETER(nVal);
 
   assert( idxNum>=0 && idxNum<=(FTS3_FULLTEXT_SEARCH+p->nColumn) );
-  assert( nVal==0 || nVal==1 );
+  assert( nVal==0 || nVal==1 || nVal==2 );
   assert( (nVal==0)==(idxNum==FTS3_FULLSCAN_SEARCH) );
   assert( p->pSegments==0 );
 
@@ -2896,8 +2955,11 @@ static int fts3FilterMethod(
       return SQLITE_NOMEM;
     }
 
-    rc = sqlite3Fts3ExprParse(p->pTokenizer, p->azColumn, p->bHasStat, 
-        p->nColumn, iCol, zQuery, -1, &pCsr->pExpr
+    pCsr->iLangid = 0;
+    if( nVal==2 ) pCsr->iLangid = sqlite3_value_int(apVal[1]);
+
+    rc = sqlite3Fts3ExprParse(p->pTokenizer, pCsr->iLangid,
+        p->azColumn, p->bHasStat, p->nColumn, iCol, zQuery, -1, &pCsr->pExpr
     );
     if( rc!=SQLITE_OK ){
       if( rc==SQLITE_ERROR ){
@@ -2968,10 +3030,17 @@ static int fts3RowidMethod(sqlite3_vtab_cursor *pCursor, sqlite_int64 *pRowid){
 /* 
 ** This is the xColumn method, called by SQLite to request a value from
 ** the row that the supplied cursor currently points to.
+**
+** If:
+**
+**   (iCol <  p->nColumn)   -> The value of the iCol'th user column.
+**   (iCol == p->nColumn)   -> Magic column with the same name as the table.
+**   (iCol == p->nColumn+1) -> Docid column
+**   (iCol == p->nColumn+2) -> Langid column
 */
 static int fts3ColumnMethod(
   sqlite3_vtab_cursor *pCursor,   /* Cursor to retrieve value from */
-  sqlite3_context *pContext,      /* Context for sqlite3_result_xxx() calls */
+  sqlite3_context *pCtx,          /* Context for sqlite3_result_xxx() calls */
   int iCol                        /* Index of column to read value from */
 ){
   int rc = SQLITE_OK;             /* Return Code */
@@ -2979,22 +3048,34 @@ static int fts3ColumnMethod(
   Fts3Table *p = (Fts3Table *)pCursor->pVtab;
 
   /* The column value supplied by SQLite must be in range. */
-  assert( iCol>=0 && iCol<=p->nColumn+1 );
+  assert( iCol>=0 && iCol<=p->nColumn+2 );
 
   if( iCol==p->nColumn+1 ){
     /* This call is a request for the "docid" column. Since "docid" is an 
     ** alias for "rowid", use the xRowid() method to obtain the value.
     */
-    sqlite3_result_int64(pContext, pCsr->iPrevId);
+    sqlite3_result_int64(pCtx, pCsr->iPrevId);
   }else if( iCol==p->nColumn ){
     /* The extra column whose name is the same as the table.
-    ** Return a blob which is a pointer to the cursor.
-    */
-    sqlite3_result_blob(pContext, &pCsr, sizeof(pCsr), SQLITE_TRANSIENT);
+    ** Return a blob which is a pointer to the cursor.  */
+    sqlite3_result_blob(pCtx, &pCsr, sizeof(pCsr), SQLITE_TRANSIENT);
+  }else if( iCol==p->nColumn+2 && pCsr->pExpr ){
+    sqlite3_result_int64(pCtx, pCsr->iLangid);
   }else{
+    /* The requested column is either a user column (one that contains 
+    ** indexed data), or the language-id column.  */
     rc = fts3CursorSeek(0, pCsr);
-    if( rc==SQLITE_OK && sqlite3_data_count(pCsr->pStmt)>(iCol+1) ){
-      sqlite3_result_value(pContext, sqlite3_column_value(pCsr->pStmt, iCol+1));
+
+    if( rc==SQLITE_OK ){
+      if( iCol==p->nColumn+2 ){
+        int iLangid = 0;
+        if( p->zLanguageid ){
+          iLangid = sqlite3_column_int(pCsr->pStmt, p->nColumn+1);
+        }
+        sqlite3_result_int(pCtx, iLangid);
+      }else if( sqlite3_data_count(pCsr->pStmt)>(iCol+1) ){
+        sqlite3_result_value(pCtx, sqlite3_column_value(pCsr->pStmt, iCol+1));
+      }
     }
   }
 
@@ -3695,7 +3776,7 @@ static int fts3EvalDeferredPhrase(Fts3Cursor *pCsr, Fts3Phrase *pPhrase){
         fts3PoslistPhraseMerge(&aOut, iToken-iPrev, 0, 1, &p1, &p2);
         sqlite3_free(aPoslist);
         aPoslist = pList;
-        nPoslist = aOut - aPoslist;
+        nPoslist = (int)(aOut - aPoslist);
         if( nPoslist==0 ){
           sqlite3_free(aPoslist);
           pPhrase->doclist.pList = 0;
@@ -3739,7 +3820,7 @@ static int fts3EvalDeferredPhrase(Fts3Cursor *pCsr, Fts3Phrase *pPhrase){
       pPhrase->doclist.pList = aOut;
       if( fts3PoslistPhraseMerge(&aOut, nDistance, 0, 1, &p1, &p2) ){
         pPhrase->doclist.bFreeList = 1;
-        pPhrase->doclist.nList = (aOut - pPhrase->doclist.pList);
+        pPhrase->doclist.nList = (int)(aOut - pPhrase->doclist.pList);
       }else{
         sqlite3_free(aOut);
         pPhrase->doclist.pList = 0;
@@ -3835,7 +3916,7 @@ void sqlite3Fts3DoclistPrev(
       iMul = (bDescIdx ? -1 : 1);
     }
 
-    *pnList = pEnd - pNext;
+    *pnList = (int)(pEnd - pNext);
     *ppIter = pNext;
     *piDocid = iDocid;
   }else{
@@ -3849,7 +3930,7 @@ void sqlite3Fts3DoclistPrev(
     }else{
       char *pSave = p;
       fts3ReversePoslist(aDoclist, &p);
-      *pnList = (pSave - p);
+      *pnList = (int)(pSave - p);
     }
     *ppIter = p;
   }
@@ -3909,7 +3990,7 @@ static int fts3EvalPhraseNext(
       }
       pDL->pList = pIter;
       fts3PoslistCopy(0, &pIter);
-      pDL->nList = (pIter - pDL->pList);
+      pDL->nList = (int)(pIter - pDL->pList);
 
       /* pIter now points just past the 0x00 that terminates the position-
       ** list for document pDL->iDocid. However, if this position-list was
@@ -4267,8 +4348,8 @@ static int fts3EvalStart(Fts3Cursor *pCsr){
       Fts3Expr **ppOr = apOr;
 
       fts3EvalTokenCosts(pCsr, 0, pCsr->pExpr, &pTC, &ppOr, &rc);
-      nToken = pTC-aTC;
-      nOr = ppOr-apOr;
+      nToken = (int)(pTC-aTC);
+      nOr = (int)(ppOr-apOr);
 
       if( rc==SQLITE_OK ){
         rc = fts3EvalSelectDeferred(pCsr, 0, aTC, nToken);
@@ -4340,7 +4421,7 @@ static int fts3EvalNearTrim(
     &pOut, aTmp, nParam1, nParam2, paPoslist, &p2
   );
   if( res ){
-    nNew = (pOut - pPhrase->doclist.pList) - 1;
+    nNew = (int)(pOut - pPhrase->doclist.pList) - 1;
     assert( pPhrase->doclist.pList[nNew]=='\0' );
     assert( nNew<=pPhrase->doclist.nList && nNew>0 );
     memset(&pPhrase->doclist.pList[nNew], 0, pPhrase->doclist.nList - nNew);
