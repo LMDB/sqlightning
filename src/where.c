@@ -3103,7 +3103,9 @@ static void bestBtreeIndex(
     /* If there is a DISTINCT qualifier and this index will scan rows in
     ** order of the DISTINCT expressions, clear bDist and set the appropriate
     ** flags in wsFlags. */
-    if( isDistinctIndex(pParse, pWC, pProbe, iCur, pDistinct, nEq) ){
+    if( isDistinctIndex(pParse, pWC, pProbe, iCur, pDistinct, nEq)
+     && (wsFlags & WHERE_COLUMN_IN)==0
+    ){
       bDist = 0;
       wsFlags |= WHERE_ROWID_RANGE|WHERE_COLUMN_RANGE|WHERE_DISTINCT;
     }
@@ -3800,8 +3802,7 @@ static Bitmask codeOneLoopStart(
   WhereInfo *pWInfo,   /* Complete information about the WHERE clause */
   int iLevel,          /* Which level of pWInfo->a[] should be coded */
   u16 wctrlFlags,      /* One of the WHERE_* flags defined in sqliteInt.h */
-  Bitmask notReady,    /* Which tables are currently available */
-  Expr *pWhere         /* Complete WHERE clause */
+  Bitmask notReady     /* Which tables are currently available */
 ){
   int j, k;            /* Loop counters */
   int iCur;            /* The VDBE cursor for the table */
@@ -4340,10 +4341,25 @@ static Bitmask codeOneLoopStart(
     ** Then for every term xN, evaluate as the subexpression: xN AND z
     ** That way, terms in y that are factored into the disjunction will
     ** be picked up by the recursive calls to sqlite3WhereBegin() below.
+    **
+    ** Actually, each subexpression is converted to "xN AND w" where w is
+    ** the "interesting" terms of z - terms that did not originate in the
+    ** ON or USING clause of a LEFT JOIN, and terms that are usable as 
+    ** indices.
     */
     if( pWC->nTerm>1 ){
-      pAndExpr = sqlite3ExprAlloc(pParse->db, TK_AND, 0, 0);
-      pAndExpr->pRight = pWhere;
+      int iTerm;
+      for(iTerm=0; iTerm<pWC->nTerm; iTerm++){
+        Expr *pExpr = pWC->a[iTerm].pExpr;
+        if( ExprHasProperty(pExpr, EP_FromJoin) ) continue;
+        if( pWC->a[iTerm].wtFlags & (TERM_VIRTUAL|TERM_ORINFO) ) continue;
+        if( (pWC->a[iTerm].eOperator & WO_ALL)==0 ) continue;
+        pExpr = sqlite3ExprDup(pParse->db, pExpr, 0);
+        pAndExpr = sqlite3ExprAnd(pParse->db, pAndExpr, pExpr);
+      }
+      if( pAndExpr ){
+        pAndExpr = sqlite3PExpr(pParse, TK_AND, 0, pAndExpr, 0);
+      }
     }
 
     for(ii=0; ii<pOrWc->nTerm; ii++){
@@ -4385,7 +4401,10 @@ static Bitmask codeOneLoopStart(
         }
       }
     }
-    sqlite3DbFree(pParse->db, pAndExpr);
+    if( pAndExpr ){
+      pAndExpr->pLeft = 0;
+      sqlite3ExprDelete(pParse->db, pAndExpr);
+    }
     sqlite3VdbeChangeP1(v, iRetInit, sqlite3VdbeCurrentAddr(v));
     sqlite3VdbeAddOp2(v, OP_Goto, 0, pLevel->addrBrk);
     sqlite3VdbeResolveLabel(v, iLoopBody);
@@ -5041,7 +5060,7 @@ WhereInfo *sqlite3WhereBegin(
   for(i=0; i<nTabList; i++){
     pLevel = &pWInfo->a[i];
     explainOneScan(pParse, pTabList, pLevel, i, pLevel->iFrom, wctrlFlags);
-    notReady = codeOneLoopStart(pWInfo, i, wctrlFlags, notReady, pWhere);
+    notReady = codeOneLoopStart(pWInfo, i, wctrlFlags, notReady);
     pWInfo->iContinue = pLevel->addrCont;
   }
 
