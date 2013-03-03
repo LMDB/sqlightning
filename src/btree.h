@@ -71,6 +71,9 @@ int sqlite3BtreeMaxPageCount(Btree*,int);
 u32 sqlite3BtreeLastPage(Btree*);
 int sqlite3BtreeSecureDelete(Btree*,int);
 int sqlite3BtreeGetReserve(Btree*);
+#if defined(SQLITE_HAS_CODEC) || defined(SQLITE_DEBUG)
+int sqlite3BtreeGetReserveNoMutex(Btree *p);
+#endif
 int sqlite3BtreeSetAutoVacuum(Btree *, int);
 int sqlite3BtreeGetAutoVacuum(Btree *);
 int sqlite3BtreeBeginTrans(Btree*,int);
@@ -114,6 +117,8 @@ void sqlite3BtreeTripAllCursors(Btree*, int);
 void sqlite3BtreeGetMeta(Btree *pBtree, int idx, u32 *pValue);
 int sqlite3BtreeUpdateMeta(Btree*, int idx, u32 value);
 
+int sqlite3BtreeNewDb(Btree *p);
+
 /*
 ** The second parameter to sqlite3BtreeGetMeta or sqlite3BtreeUpdateMeta
 ** should be one of the following values. The integer values are assigned 
@@ -134,6 +139,12 @@ int sqlite3BtreeUpdateMeta(Btree*, int idx, u32 value);
 #define BTREE_TEXT_ENCODING       5
 #define BTREE_USER_VERSION        6
 #define BTREE_INCR_VACUUM         7
+
+/*
+** Values that may be OR'd together to form the second argument of an
+** sqlite3BtreeCursorHints() call.
+*/
+#define BTREE_BULKLOAD 0x00000001
 
 int sqlite3BtreeCursor(
   Btree*,                              /* BTree containing table to open */
@@ -178,8 +189,8 @@ struct Pager *sqlite3BtreePager(Btree*);
 int sqlite3BtreePutData(BtCursor*, u32 offset, u32 amt, void*);
 void sqlite3BtreeCacheOverflow(BtCursor *);
 void sqlite3BtreeClearCursor(BtCursor *);
-
 int sqlite3BtreeSetVersion(Btree *pBt, int iVersion);
+void sqlite3BtreeCursorHints(BtCursor *, unsigned int mask);
 
 #ifndef NDEBUG
 int sqlite3BtreeCursorIsValid(BtCursor*);

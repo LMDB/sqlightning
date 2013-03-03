@@ -55,12 +55,13 @@ LIBOBJ+= alter.o analyze.o attach.o auth.o \
          callback.o complete.o ctime.o date.o delete.o expr.o fault.o fkey.o \
          fts3.o fts3_aux.o fts3_expr.o fts3_hash.o fts3_icu.o fts3_porter.o \
          fts3_snippet.o fts3_tokenizer.o fts3_tokenizer1.o \
+	 fts3_unicode.o fts3_unicode2.o \
          fts3_write.o func.o global.o hash.o \
          icu.o insert.o journal.o legacy.o loadext.o \
          main.o malloc.o mem0.o mem1.o mem2.o mem3.o mem5.o \
          memjournal.o \
-         mutex.o mutex_noop.o mutex_os2.o mutex_unix.o mutex_w32.o \
-         notify.o opcodes.o os.o os_os2.o os_unix.o os_win.o \
+         mutex.o mutex_noop.o mutex_unix.o mutex_w32.o \
+         notify.o opcodes.o os.o os_unix.o os_win.o \
          pager.o parse.o pcache.o pcache1.o pragma.o prepare.o printf.o \
          random.o resolve.o rowset.o rtree.o select.o status.o \
          table.o tokenize.o trigger.o \
@@ -112,14 +113,12 @@ SRC = \
   $(TOP)/src/mutex.c \
   $(TOP)/src/mutex.h \
   $(TOP)/src/mutex_noop.c \
-  $(TOP)/src/mutex_os2.c \
   $(TOP)/src/mutex_unix.c \
   $(TOP)/src/mutex_w32.c \
   $(TOP)/src/notify.c \
   $(TOP)/src/os.c \
   $(TOP)/src/os.h \
   $(TOP)/src/os_common.h \
-  $(TOP)/src/os_os2.c \
   $(TOP)/src/os_unix.c \
   $(TOP)/src/os_win.c \
   $(TOP)/src/pager.c \
@@ -198,6 +197,8 @@ SRC += \
   $(TOP)/ext/fts3/fts3_tokenizer.h \
   $(TOP)/ext/fts3/fts3_tokenizer.c \
   $(TOP)/ext/fts3/fts3_tokenizer1.c \
+  $(TOP)/ext/fts3/fts3_unicode.c \
+  $(TOP)/ext/fts3/fts3_unicode2.c \
   $(TOP)/ext/fts3/fts3_write.c
 SRC += \
   $(TOP)/ext/icu/sqliteicu.h \
@@ -256,6 +257,7 @@ TESTSRC = \
   $(TOP)/src/test_schema.c \
   $(TOP)/src/test_server.c \
   $(TOP)/src/test_stat.c \
+  $(TOP)/src/test_sqllog.c \
   $(TOP)/src/test_superlock.c \
   $(TOP)/src/test_syscall.c \
   $(TOP)/src/test_tclvar.c \
@@ -279,7 +281,6 @@ TESTSRC2 = \
   $(TOP)/src/wal.c \
   $(TOP)/src/mem5.c \
   $(TOP)/src/os.c \
-  $(TOP)/src/os_os2.c \
   $(TOP)/src/os_unix.c \
   $(TOP)/src/os_win.c \
   $(TOP)/src/pager.c \
@@ -508,6 +509,12 @@ fts3_tokenizer.o:	$(TOP)/ext/fts3/fts3_tokenizer.c $(HDR) $(EXTHDR)
 fts3_tokenizer1.o:	$(TOP)/ext/fts3/fts3_tokenizer1.c $(HDR) $(EXTHDR)
 	$(TCCX) -DSQLITE_CORE -c $(TOP)/ext/fts3/fts3_tokenizer1.c
 
+fts3_unicode.o:	$(TOP)/ext/fts3/fts3_unicode.c $(HDR) $(EXTHDR)
+	$(TCCX) -DSQLITE_CORE -c $(TOP)/ext/fts3/fts3_unicode.c
+
+fts3_unicode2.o:	$(TOP)/ext/fts3/fts3_unicode2.c $(HDR) $(EXTHDR)
+	$(TCCX) -DSQLITE_CORE -c $(TOP)/ext/fts3/fts3_unicode2.c
+
 fts3_write.o:	$(TOP)/ext/fts3/fts3_write.c $(HDR) $(EXTHDR)
 	$(TCCX) -DSQLITE_CORE -c $(TOP)/ext/fts3/fts3_write.c
 
@@ -540,7 +547,7 @@ TESTFIXTURE_FLAGS += -DSQLITE_SERVER=1 -DSQLITE_PRIVATE="" -DSQLITE_CORE
 testfixture$(EXE): $(TESTSRC2) libsqlite3.a $(TESTSRC) $(TOP)/src/tclsqlite.c
 	$(TCCX) $(TCL_FLAGS) -DTCLSH=1 $(TESTFIXTURE_FLAGS)                  \
 		$(TESTSRC) $(TESTSRC2) $(TOP)/src/tclsqlite.c                \
-		-o testfixture$(EXE) $(LIBTCL) $(THREADLIB) libsqlite3.a
+		-o testfixture$(EXE) $(LIBTCL) libsqlite3.a $(THREADLIB)
 
 amalgamation-testfixture$(EXE): sqlite3.c $(TESTSRC) $(TOP)/src/tclsqlite.c
 	$(TCCX) $(TCL_FLAGS) -DTCLSH=1 $(TESTFIXTURE_FLAGS)                  \
@@ -558,6 +565,9 @@ fulltest:	testfixture$(EXE) sqlite3$(EXE)
 
 soaktest:	testfixture$(EXE) sqlite3$(EXE)
 	./testfixture$(EXE) $(TOP)/test/all.test -soak=1
+
+fulltestonly:	testfixture$(EXE) sqlite3$(EXE)
+	./testfixture$(EXE) $(TOP)/test/full.test
 
 test:	testfixture$(EXE) sqlite3$(EXE)
 	./testfixture$(EXE) $(TOP)/test/veryquick.test
@@ -610,3 +620,4 @@ clean:
 	rm -f threadtest3 threadtest3.exe
 	rm -f sqlite3.c fts?amal.c tclsqlite3.c
 	rm -f sqlite3_analyzer sqlite3_analyzer.exe sqlite3_analyzer.c
+	rm -f sqlite-*-output.vsix

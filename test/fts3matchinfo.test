@@ -275,11 +275,14 @@ do_matchinfo_test 4.3.4 t5 {t5 MATCH 'a a a'}       { s {3 1} }
 do_matchinfo_test 4.3.5 t5 {t5 MATCH '"a b" "a b"'} { s {2} }
 do_matchinfo_test 4.3.6 t5 {t5 MATCH 'a OR b'}      { s {1 2 1 1} }
 
-do_execsql_test 4.4.0 {
-  INSERT INTO t5(t5) VALUES('optimize');
-  UPDATE t5_segments 
-  SET block = zeroblob(length(block)) 
-  WHERE length(block)>10000;
+do_execsql_test 4.4.0.1 { INSERT INTO t5(t5) VALUES('optimize') }
+
+ifcapable fts4_deferred {
+  do_execsql_test 4.4.0.2 {
+    UPDATE t5_segments 
+    SET block = zeroblob(length(block)) 
+    WHERE length(block)>10000;
+  }
 }
 
 do_matchinfo_test 4.4.2 t5 {t5 MATCH 'a b'}         { s {2} }
@@ -403,6 +406,25 @@ do_execsql_test  8.4.3.1 { UPDATE t11_stat SET value = NULL; }
 do_catchsql_test 8.5.3.2 {
   SELECT mit(matchinfo(t11, 'nxa')) FROM t11 WHERE t11 MATCH 'a*'
 } {1 {database disk image is malformed}}
+
+#-------------------------------------------------------------------------
+do_execsql_test 8.1 {
+  CREATE VIRTUAL TABLE t12 USING fts4;
+  INSERT INTO t12 VALUES('a b c d');
+  SELECT mit(matchinfo(t12, 'x')) FROM t12 WHERE t12 MATCH 'a NEAR/1 d OR a';
+} {{0 0 0 0 0 0 1 1 1}}
+do_execsql_test 8.2 {
+  INSERT INTO t12 VALUES('a d c d');
+  SELECT mit(matchinfo(t12, 'x')) FROM t12 WHERE t12 MATCH 'a NEAR/1 d OR a';
+} {
+  {0 1 1 0 1 1 1 2 2} {1 1 1 1 1 1 1 2 2}
+}
+do_execsql_test 8.3 {
+  INSERT INTO t12 VALUES('a d d a');
+  SELECT mit(matchinfo(t12, 'x')) FROM t12 WHERE t12 MATCH 'a NEAR/1 d OR a';
+} {
+  {0 3 2 0 3 2 1 4 3} {1 3 2 1 3 2 1 4 3} {2 3 2 2 3 2 2 4 3}
+}
 
 finish_test
 

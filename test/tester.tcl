@@ -19,6 +19,8 @@
 #
 # Commands to manipulate the db and the file-system at a high level:
 #
+#      is_relative_file
+#      test_pwd
 #      get_pwd
 #      copy_file              FROM TO
 #      delete_file            FILENAME
@@ -29,6 +31,7 @@
 # Test the capability of the SQLite version built into the interpreter to
 # determine if a specific test can be run:
 #
+#      capable                EXPR
 #      ifcapable              EXPR
 #
 # Calulate checksums based on database contents:
@@ -132,7 +135,7 @@ proc getFileRetries {} {
     # NOTE: Return the default number of retries for [file] operations.  A
     #       value of zero or less here means "disabled".
     #
-    return [expr {$::tcl_platform(platform) eq "windows" ? 10 : 0}]
+    return [expr {$::tcl_platform(platform) eq "windows" ? 50 : 0}]
   }
   return $::G(file-retries)
 }
@@ -209,6 +212,34 @@ proc do_copy_file {force from to} {
     } else {
       file copy $from $to
     }
+  }
+}
+
+# Check if a file name is relative
+#
+proc is_relative_file { file } {
+  return [expr {[file pathtype $file] != "absolute"}]
+}
+
+# If the VFS supports using the current directory, returns [pwd];
+# otherwise, it returns only the provided suffix string (which is
+# empty by default).
+#
+proc test_pwd { args } {
+  if {[llength $args] > 0} {
+    set suffix1 [lindex $args 0]
+    if {[llength $args] > 1} {
+      set suffix2 [lindex $args 1]
+    } else {
+      set suffix2 $suffix1
+    }
+  } else {
+    set suffix1 ""; set suffix2 ""
+  }
+  ifcapable curdir {
+    return "[get_pwd]$suffix1"
+  } else {
+    return $suffix2
   }
 }
 
@@ -474,7 +505,6 @@ proc incr_ntest {} {
 # Invoke the do_test procedure to run a single test 
 #
 proc do_test {name cmd expected} {
-
   global argv cmdlinearg
 
   fix_testname name
@@ -505,17 +535,43 @@ proc do_test {name cmd expected} {
     if {[catch {uplevel #0 "$cmd;\n"} result]} {
       puts "\nError: $result"
       fail_test $name
-    } elseif {[string compare $result $expected]} {
-      puts "\nExpected: \[$expected\]\n     Got: \[$result\]"
-      fail_test $name
     } else {
-      puts " Ok"
+      if {[regexp {^~?/.*/$} $expected]} {
+        if {[string index $expected 0]=="~"} {
+          set re [string map {# {[-0-9.]+}} [string range $expected 2 end-1]]
+          set ok [expr {![regexp $re $result]}]
+        } else {
+          set re [string map {# {[-0-9.]+}} [string range $expected 1 end-1]]
+          set ok [regexp $re $result]
+        }
+      } else {
+        set ok [expr {[string compare $result $expected]==0}]
+      }
+      if {!$ok} {
+        # if {![info exists ::testprefix] || $::testprefix eq ""} {
+        #   error "no test prefix"
+        # }
+        puts "\nExpected: \[$expected\]\n     Got: \[$result\]"
+        fail_test $name
+      } else {
+        puts " Ok"
+      }
     }
   } else {
     puts " Omitted"
     omit_test $name "pattern mismatch" 0
   }
   flush stdout
+}
+
+proc catchcmd {db {cmd ""}} {
+  global CLI
+  set out [open cmds.txt w]
+  puts $out $cmd
+  close $out
+  set line "exec $CLI $db < cmds.txt"
+  set rc [catch { eval $line } msg]
+  list $rc $msg
 }
 
 proc filepath_normalize {p} {
@@ -940,6 +996,12 @@ proc fix_ifcapable_expr {expr} {
   }
   if {$state} {append ret )}
   return $ret
+}
+
+# Returns non-zero if the capabilities are present; zero otherwise.
+#
+proc capable {expr} {
+  set e [fix_ifcapable_expr $expr]; return [expr ($e)]
 }
 
 # Evaluate a boolean expression of capabilities.  If true, execute the
@@ -1591,6 +1653,9 @@ proc db_delete_and_reopen {{file test.db}} {
 # If the library is compiled with the SQLITE_DEFAULT_AUTOVACUUM macro set
 # to non-zero, then set the global variable $AUTOVACUUM to 1.
 set AUTOVACUUM $sqlite_options(default_autovacuum)
+
+# Make sure the FTS enhanced query syntax is disabled.
+set sqlite_fts3_enable_parentheses 0
 
 source $testdir/thread_common.tcl
 source $testdir/malloc_common.tcl

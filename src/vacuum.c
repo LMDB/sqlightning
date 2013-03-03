@@ -85,6 +85,7 @@ void sqlite3Vacuum(Parse *pParse){
   Vdbe *v = sqlite3GetVdbe(pParse);
   if( v ){
     sqlite3VdbeAddOp2(v, OP_Vacuum, 0, 0);
+    sqlite3VdbeUsesBtree(v, 0);
   }
   return;
 }
@@ -339,7 +340,7 @@ end_of_vacuum:
 
   /* This both clears the schemas and reduces the size of the db->aDb[]
   ** array. */ 
-  sqlite3ResetInternalSchema(db, -1);
+  sqlite3ResetAllSchemasOfConnection(db);
 
   return rc;
 }

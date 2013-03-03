@@ -75,6 +75,15 @@ void (*sqlite3IoTrace)(const char*, ...) = 0;
 char *sqlite3_temp_directory = 0;
 
 /*
+** If the following global variable points to a string which is the
+** name of a directory, then that directory will be used to store
+** all database files specified with a relative pathname.
+**
+** See also the "PRAGMA data_store_directory" SQL command.
+*/
+char *sqlite3_data_directory = 0;
+
+/*
 ** Initialize SQLite.  
 **
 ** This routine must be called to initialize the memory allocation,
@@ -122,6 +131,13 @@ int sqlite3_initialize(void){
   ** of this routine.
   */
   if( sqlite3GlobalConfig.isInit ) return SQLITE_OK;
+
+#ifdef SQLITE_ENABLE_SQLLOG
+  {
+    extern void sqlite3_init_sqllog(void);
+    sqlite3_init_sqllog();
+  }
+#endif
 
   /* Make sure the mutex subsystem is initialized.  If unable to 
   ** initialize the mutex subsystem, return early with the error.
@@ -272,6 +288,18 @@ int sqlite3_shutdown(void){
   if( sqlite3GlobalConfig.isMallocInit ){
     sqlite3MallocEnd();
     sqlite3GlobalConfig.isMallocInit = 0;
+
+#ifndef SQLITE_OMIT_SHUTDOWN_DIRECTORIES
+    /* The heap subsystem has now been shutdown and these values are supposed
+    ** to be NULL or point to memory that was obtained from sqlite3_malloc(),
+    ** which would rely on that heap subsystem; therefore, make sure these
+    ** values cannot refer to heap memory that was just invalidated when the
+    ** heap subsystem was shutdown.  This is only done if the current call to
+    ** this function resulted in the heap subsystem actually being shutdown.
+    */
+    sqlite3_data_directory = 0;
+    sqlite3_temp_directory = 0;
+#endif
   }
   if( sqlite3GlobalConfig.isMutexInit ){
     sqlite3MutexEnd();
@@ -453,6 +481,20 @@ int sqlite3_config(int op, ...){
       sqlite3GlobalConfig.bOpenUri = va_arg(ap, int);
       break;
     }
+
+    case SQLITE_CONFIG_COVERING_INDEX_SCAN: {
+      sqlite3GlobalConfig.bUseCis = va_arg(ap, int);
+      break;
+    }
+
+#ifdef SQLITE_ENABLE_SQLLOG
+    case SQLITE_CONFIG_SQLLOG: {
+      typedef void(*SQLLOGFUNC_t)(void*, sqlite3*, const char*, int);
+      sqlite3GlobalConfig.xSqllog = va_arg(ap, SQLLOGFUNC_t);
+      sqlite3GlobalConfig.pSqllogArg = va_arg(ap, void *);
+      break;
+    }
+#endif
 
     default: {
       rc = SQLITE_ERROR;
@@ -721,12 +763,48 @@ static void functionDestroy(sqlite3 *db, FuncDef *p){
 }
 
 /*
+** Disconnect all sqlite3_vtab objects that belong to database connection
+** db. This is called when db is being closed.
+*/
+static void disconnectAllVtab(sqlite3 *db){
+#ifndef SQLITE_OMIT_VIRTUALTABLE
+  int i;
+  sqlite3BtreeEnterAll(db);
+  for(i=0; i<db->nDb; i++){
+    Schema *pSchema = db->aDb[i].pSchema;
+    if( db->aDb[i].pSchema ){
+      HashElem *p;
+      for(p=sqliteHashFirst(&pSchema->tblHash); p; p=sqliteHashNext(p)){
+        Table *pTab = (Table *)sqliteHashData(p);
+        if( IsVirtual(pTab) ) sqlite3VtabDisconnect(db, pTab);
+      }
+    }
+  }
+  sqlite3BtreeLeaveAll(db);
+#else
+  UNUSED_PARAMETER(db);
+#endif
+}
+
+/*
+** Return TRUE if database connection db has unfinalized prepared
+** statements or unfinished sqlite3_backup objects.  
+*/
+static int connectionIsBusy(sqlite3 *db){
+  int j;
+  assert( sqlite3_mutex_held(db->mutex) );
+  if( db->pVdbe ) return 1;
+  for(j=0; j<db->nDb; j++){
+    Btree *pBt = db->aDb[j].pBt;
+    if( pBt && sqlite3BtreeIsInBackup(pBt) ) return 1;
+  }
+  return 0;
+}
+
+/*
 ** Close an existing SQLite database
 */
-int sqlite3_close(sqlite3 *db){
-  HashElem *i;                    /* Hash table iterator */
-  int j;
-
+static int sqlite3Close(sqlite3 *db, int forceZombie){
   if( !db ){
     return SQLITE_OK;
   }
@@ -735,10 +813,10 @@ int sqlite3_close(sqlite3 *db){
   }
   sqlite3_mutex_enter(db->mutex);
 
-  /* Force xDestroy calls on all virtual tables */
-  sqlite3ResetInternalSchema(db, -1);
+  /* Force xDisconnect calls on all virtual tables */
+  disconnectAllVtab(db);
 
-  /* If a transaction is open, the ResetInternalSchema() call above
+  /* If a transaction is open, the disconnectAllVtab() call above
   ** will not have called the xDisconnect() method on any virtual
   ** tables in the db->aVTrans[] array. The following sqlite3VtabRollback()
   ** call will do so. We need to do this before the check for active
@@ -747,28 +825,74 @@ int sqlite3_close(sqlite3 *db){
   */
   sqlite3VtabRollback(db);
 
-  /* If there are any outstanding VMs, return SQLITE_BUSY. */
-  if( db->pVdbe ){
-    sqlite3Error(db, SQLITE_BUSY, 
-        "unable to close due to unfinalised statements");
+  /* Legacy behavior (sqlite3_close() behavior) is to return
+  ** SQLITE_BUSY if the connection can not be closed immediately.
+  */
+  if( !forceZombie && connectionIsBusy(db) ){
+    sqlite3Error(db, SQLITE_BUSY, "unable to close due to unfinalized "
+       "statements or unfinished backups");
     sqlite3_mutex_leave(db->mutex);
     return SQLITE_BUSY;
   }
-  assert( sqlite3SafetyCheckSickOrOk(db) );
 
-  for(j=0; j<db->nDb; j++){
-    Btree *pBt = db->aDb[j].pBt;
-    if( pBt && sqlite3BtreeIsInBackup(pBt) ){
-      sqlite3Error(db, SQLITE_BUSY, 
-          "unable to close due to unfinished backup operation");
-      sqlite3_mutex_leave(db->mutex);
-      return SQLITE_BUSY;
-    }
+#ifdef SQLITE_ENABLE_SQLLOG
+  if( sqlite3GlobalConfig.xSqllog ){
+    /* Closing the handle. Fourth parameter is passed the value 2. */
+    sqlite3GlobalConfig.xSqllog(sqlite3GlobalConfig.pSqllogArg, db, 0, 2);
   }
+#endif
+
+  /* Convert the connection into a zombie and then close it.
+  */
+  db->magic = SQLITE_MAGIC_ZOMBIE;
+  sqlite3LeaveMutexAndCloseZombie(db);
+  return SQLITE_OK;
+}
+
+/*
+** Two variations on the public interface for closing a database
+** connection. The sqlite3_close() version returns SQLITE_BUSY and
+** leaves the connection option if there are unfinalized prepared
+** statements or unfinished sqlite3_backups.  The sqlite3_close_v2()
+** version forces the connection to become a zombie if there are
+** unclosed resources, and arranges for deallocation when the last
+** prepare statement or sqlite3_backup closes.
+*/
+int sqlite3_close(sqlite3 *db){ return sqlite3Close(db,0); }
+int sqlite3_close_v2(sqlite3 *db){ return sqlite3Close(db,1); }
+
+
+/*
+** Close the mutex on database connection db.
+**
+** Furthermore, if database connection db is a zombie (meaning that there
+** has been a prior call to sqlite3_close(db) or sqlite3_close_v2(db)) and
+** every sqlite3_stmt has now been finalized and every sqlite3_backup has
+** finished, then free all resources.
+*/
+void sqlite3LeaveMutexAndCloseZombie(sqlite3 *db){
+  HashElem *i;                    /* Hash table iterator */
+  int j;
+
+  /* If there are outstanding sqlite3_stmt or sqlite3_backup objects
+  ** or if the connection has not yet been closed by sqlite3_close_v2(),
+  ** then just leave the mutex and return.
+  */
+  if( db->magic!=SQLITE_MAGIC_ZOMBIE || connectionIsBusy(db) ){
+    sqlite3_mutex_leave(db->mutex);
+    return;
+  }
+
+  /* If we reach this point, it means that the database connection has
+  ** closed all sqlite3_stmt and sqlite3_backup objects and has been
+  ** pased to sqlite3_close (meaning that it is a zombie).  Therefore,
+  ** go ahead and free all resources.
+  */
 
   /* Free any outstanding Savepoint structures. */
   sqlite3CloseSavepoints(db);
 
+  /* Close all database connections */
   for(j=0; j<db->nDb; j++){
     struct Db *pDb = &db->aDb[j];
     if( pDb->pBt ){
@@ -779,15 +903,22 @@ int sqlite3_close(sqlite3 *db){
       }
     }
   }
-  sqlite3ResetInternalSchema(db, -1);
+  /* Clear the TEMP schema separately and last */
+  if( db->aDb[1].pSchema ){
+    sqlite3SchemaClear(db->aDb[1].pSchema);
+  }
+  sqlite3VtabUnlockList(db);
+
+  /* Free up the array of auxiliary databases */
+  sqlite3CollapseDatabaseArray(db);
+  assert( db->nDb<=2 );
+  assert( db->aDb==db->aDbStatic );
 
   /* Tell the code in notify.c that the connection no longer holds any
   ** locks and does not require any further unlock-notify callbacks.
   */
   sqlite3ConnectionClosed(db);
 
-  assert( db->nDb<=2 );
-  assert( db->aDb==db->aDbStatic );
   for(j=0; j<ArraySize(db->aFunc.a); j++){
     FuncDef *pNext, *pHash, *p;
     for(p=db->aFunc.a[j]; p; p=pHash){
@@ -845,7 +976,6 @@ int sqlite3_close(sqlite3 *db){
     sqlite3_free(db->lookaside.pStart);
   }
   sqlite3_free(db);
-  return SQLITE_OK;
 }
 
 /*
@@ -874,7 +1004,7 @@ void sqlite3RollbackAll(sqlite3 *db, int tripCode){
 
   if( db->flags&SQLITE_InternChanges ){
     sqlite3ExpirePreparedStatements(db);
-    sqlite3ResetInternalSchema(db, -1);
+    sqlite3ResetAllSchemasOfConnection(db);
   }
 
   /* Any deferred constraint violations have now been resolved. */
@@ -1014,6 +1144,7 @@ int sqlite3_busy_handler(
   db->busyHandler.xFunc = xBusy;
   db->busyHandler.pArg = pArg;
   db->busyHandler.nBusy = 0;
+  db->busyTimeout = 0;
   sqlite3_mutex_leave(db->mutex);
   return SQLITE_OK;
 }
@@ -1051,8 +1182,8 @@ void sqlite3_progress_handler(
 */
 int sqlite3_busy_timeout(sqlite3 *db, int ms){
   if( ms>0 ){
-    db->busyTimeout = ms;
     sqlite3_busy_handler(db, sqliteDefaultBusyCallback, (void*)db);
+    db->busyTimeout = ms;
   }else{
     sqlite3_busy_handler(db, 0, 0);
   }
@@ -1666,6 +1797,15 @@ int sqlite3_extended_errcode(sqlite3 *db){
 }
 
 /*
+** Return a string that describes the kind of error specified in the
+** argument.  For now, this simply calls the internal sqlite3ErrStr()
+** function.
+*/
+const char *sqlite3_errstr(int rc){
+  return sqlite3ErrStr(rc);
+}
+
+/*
 ** Create a new collating function for database "db".  The name is zName
 ** and the encoding is enc.
 */
@@ -2012,10 +2152,12 @@ int sqlite3ParseUri(
             { "ro",  SQLITE_OPEN_READONLY },
             { "rw",  SQLITE_OPEN_READWRITE }, 
             { "rwc", SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE },
+            { "memory", SQLITE_OPEN_MEMORY },
             { 0, 0 }
           };
 
-          mask = SQLITE_OPEN_READONLY|SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE;
+          mask = SQLITE_OPEN_READONLY | SQLITE_OPEN_READWRITE
+                   | SQLITE_OPEN_CREATE | SQLITE_OPEN_MEMORY;
           aMode = aOpenMode;
           limit = mask & flags;
           zModeType = "access";
@@ -2036,7 +2178,7 @@ int sqlite3ParseUri(
             rc = SQLITE_ERROR;
             goto parse_uri_out;
           }
-          if( mode>limit ){
+          if( (mode & ~SQLITE_OPEN_MEMORY)>limit ){
             *pzErrMsg = sqlite3_mprintf("%s mode not allowed: %s",
                                         zModeType, zVal);
             rc = SQLITE_PERM;
@@ -2055,6 +2197,7 @@ int sqlite3ParseUri(
     memcpy(zFile, zUri, nUri);
     zFile[nUri] = '\0';
     zFile[nUri+1] = '\0';
+    flags &= ~SQLITE_OPEN_URI;
   }
 
   *ppVfs = sqlite3_vfs_find(zVfs);
@@ -2331,6 +2474,13 @@ opendb_out:
     db->magic = SQLITE_MAGIC_SICK;
   }
   *ppDb = db;
+#ifdef SQLITE_ENABLE_SQLLOG
+  if( sqlite3GlobalConfig.xSqllog ){
+    /* Opening a db handle. Fourth parameter is passed 0. */
+    void *pArg = sqlite3GlobalConfig.pSqllogArg;
+    sqlite3GlobalConfig.xSqllog(pArg, db, zFilename, 0);
+  }
+#endif
   return sqlite3ApiExit(0, rc);
 }
 
@@ -2636,7 +2786,7 @@ int sqlite3_table_column_metadata(
     zDataType = pCol->zType;
     zCollSeq = pCol->zColl;
     notnull = pCol->notNull!=0;
-    primarykey  = pCol->isPrimKey!=0;
+    primarykey  = (pCol->colFlags & COLFLAG_PRIMKEY)!=0;
     autoinc = pTab->iPKey==iCol && (pTab->tabFlags & TF_Autoincrement)!=0;
   }else{
     zDataType = "INTEGER";
@@ -2899,8 +3049,7 @@ int sqlite3_test_control(int op, ...){
     */
     case SQLITE_TESTCTRL_OPTIMIZATIONS: {
       sqlite3 *db = va_arg(ap, sqlite3*);
-      int x = va_arg(ap,int);
-      db->flags = (x & SQLITE_OptMask) | (db->flags & ~SQLITE_OptMask);
+      db->dbOptFlags = (u16)(va_arg(ap, int) & 0xffff);
       break;
     }
 

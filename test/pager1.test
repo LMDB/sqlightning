@@ -462,7 +462,7 @@ do_test pager1.4.2.3 {
 } {64 ok}
 do_test pager1.4.2.4 {
   faultsim_restore_and_reopen
-  hexio_write test.db-journal [expr [file size test.db-journal]-20] 123456
+  hexio_write test.db-journal [expr [file size test.db-journal]-30] 123456
   execsql {
     SELECT count(*) FROM t1;
     PRAGMA integrity_check;
@@ -470,7 +470,7 @@ do_test pager1.4.2.4 {
 } {4 ok}
 do_test pager1.4.2.5 {
   faultsim_restore_and_reopen
-  hexio_write test.db-journal [expr [file size test.db-journal]-20] 123456
+  hexio_write test.db-journal [expr [file size test.db-journal]-30] 123456
   foreach f [glob test.db-mj*] { forcedelete $f }
   execsql {
     SELECT count(*) FROM t1;
@@ -524,18 +524,27 @@ db close
 # file-system is saved just before the xDelete() call to remove the 
 # master journal file from the file-system.
 #
+set pwd [get_pwd]
 testvfs tv -default 1
 tv script copy_on_mj_delete
 set ::mj_filename_length 0
 proc copy_on_mj_delete {method filename args} {
   if {[string match *mj* [file tail $filename]]} { 
-    set ::mj_filename_length [string length $filename]
+    #
+    # NOTE: Is the file name relative?  If so, add the length of the current
+    #       directory.
+    #
+    if {[is_relative_file $filename]} {
+      set ::mj_filename_length \
+        [expr {[string length $filename] + [string length $::pwd]}]
+    } else {
+      set ::mj_filename_length [string length $filename]
+    }
     faultsim_save 
   }
   return SQLITE_OK
 }
 
-set pwd [get_pwd]
 foreach {tn1 tcl} {
   1 { set prefix "test.db" }
   2 { 
@@ -1019,8 +1028,17 @@ do_test pager1-5.4.1 {
   #      the master-journal name encoded as utf-8 with no nul term.
   #
   set mj_pointer [expr {
-    20 + [string length [get_pwd]] + [string length "/test.db-mjXXXXXX9XX"]
+    20 + [string length "test.db-mjXXXXXX9XX"]
   }]
+  #
+  #   NOTE: For item 3 above, if the current SQLite VFS lacks the concept of a
+  #         current directory, the length of the current directory name plus 1
+  #         character for the directory separator character are NOT counted as
+  #         part of the total size; otherwise, they are.
+  #
+  ifcapable curdir {
+    set mj_pointer [expr {$mj_pointer + [string length [get_pwd]] + 1}]
+  }
   expr {$::max_journal==(512+2*(1024+8)+$mj_pointer)}
 } 1
 do_test pager1-5.4.2 {
@@ -1038,8 +1056,17 @@ do_test pager1-5.4.2 {
   # written starting at the next (in this case 512 byte) sector boundary.
   #
   set mj_pointer [expr {
-    20 + [string length [get_pwd]] + [string length "/test.db-mjXXXXXX9XX"]
+    20 + [string length "test.db-mjXXXXXX9XX"]
   }]
+  #
+  #   NOTE: If the current SQLite VFS lacks the concept of a current directory,
+  #         the length of the current directory name plus 1 character for the
+  #         directory separator character are NOT counted as part of the total
+  #         size; otherwise, they are.
+  #
+  ifcapable curdir {
+    set mj_pointer [expr {$mj_pointer + [string length [get_pwd]] + 1}]
+  }
   expr {$::max_journal==(((512+2*(1024+8)+511)/512)*512 + $mj_pointer)}
 } 1
 db close
@@ -1338,7 +1365,7 @@ do_test pager1-9.4.1 {
 } {SQLITE_DONE SQLITE_OK}
 do_test pager1-9.4.2 {
   list [file size test.db2] [file size test.db]
-} {0 0}
+} {1024 0}
 db2 close
 
 #-------------------------------------------------------------------------
@@ -1768,7 +1795,7 @@ do_test pager1-18.2 {
   catchsql { SELECT count(*) FROM t1 } db2
 } {1 {database disk image is malformed}}
 db2 close
-do_test pager1-18.3 {
+do_test pager1-18.3.1 {
   execsql {
     CREATE TABLE t2(x);
     INSERT INTO t2 VALUES(a_string(5000));
@@ -1776,13 +1803,38 @@ do_test pager1-18.3 {
   set pgno [expr ([file size test.db] / 1024)-2]
   hexio_write test.db [expr ($pgno-1)*1024] 00000000
   sqlite3 db2 test.db
-  catchsql { SELECT length(x) FROM t2 } db2
+  # even though x is malformed, because typeof() does
+  # not load the content of x, the error is not noticed.
+  catchsql { SELECT typeof(x) FROM t2 } db2
+} {0 text}
+do_test pager1-18.3.2 {
+  # in this case, the value of x is loaded and so the error is
+  # detected
+  catchsql { SELECT length(x||'') FROM t2 } db2
+} {1 {database disk image is malformed}}
+db2 close
+do_test pager1-18.3.3 {
+  execsql {
+    DELETE FROM t2;
+    INSERT INTO t2 VALUES(randomblob(5000));
+  }
+  set pgno [expr ([file size test.db] / 1024)-2]
+  hexio_write test.db [expr ($pgno-1)*1024] 00000000
+  sqlite3 db2 test.db
+  # even though x is malformed, because length() and typeof() do
+  # not load the content of x, the error is not noticed.
+  catchsql { SELECT length(x), typeof(x) FROM t2 } db2
+} {0 {5000 blob}}
+do_test pager1-18.3.4 {
+  # in this case, the value of x is loaded and so the error is
+  # detected
+  catchsql { SELECT length(x||'') FROM t2 } db2
 } {1 {database disk image is malformed}}
 db2 close
 do_test pager1-18.4 {
   hexio_write test.db [expr ($pgno-1)*1024] 90000000
   sqlite3 db2 test.db
-  catchsql { SELECT length(x) FROM t2 } db2
+  catchsql { SELECT length(x||'') FROM t2 } db2
 } {1 {database disk image is malformed}}
 db2 close
 do_test pager1-18.5 {
@@ -2434,5 +2486,33 @@ do_test pager1-32.1 {
 
 # Cleanup 20MB file left by the previous test.
 forcedelete test.db
+
+#-------------------------------------------------------------------------
+# Test that if a transaction is committed in journal_mode=DELETE mode,
+# and the call to unlink() returns an ENOENT error, the COMMIT does not
+# succeed.
+#
+if {$::tcl_platform(platform)=="unix"} {
+  do_test pager1-33.1 {
+    sqlite3 db test.db
+    execsql {
+      CREATE TABLE t1(x);
+      INSERT INTO t1 VALUES('one');
+      INSERT INTO t1 VALUES('two');
+      BEGIN;
+        INSERT INTO t1 VALUES('three');
+        INSERT INTO t1 VALUES('four');
+    }
+    forcedelete bak-journal
+    file rename test.db-journal bak-journal
+
+    catchsql COMMIT
+  } {1 {disk I/O error}}
+
+  do_test pager1-33.2 {
+    file rename bak-journal test.db-journal
+    execsql { SELECT * FROM t1 }
+  } {one two}
+}
 
 finish_test

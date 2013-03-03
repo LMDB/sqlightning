@@ -208,7 +208,8 @@ int sqlite3_db_status(
 
       db->pnBytesFreed = &nByte;
       for(pVdbe=db->pVdbe; pVdbe; pVdbe=pVdbe->pNext){
-        sqlite3VdbeDeleteObject(db, pVdbe);
+        sqlite3VdbeClearObject(db, pVdbe);
+        sqlite3DbFree(db, pVdbe);
       }
       db->pnBytesFreed = 0;
 
@@ -224,10 +225,12 @@ int sqlite3_db_status(
     ** to zero.
     */
     case SQLITE_DBSTATUS_CACHE_HIT:
-    case SQLITE_DBSTATUS_CACHE_MISS: {
+    case SQLITE_DBSTATUS_CACHE_MISS:
+    case SQLITE_DBSTATUS_CACHE_WRITE:{
       int i;
       int nRet = 0;
       assert( SQLITE_DBSTATUS_CACHE_MISS==SQLITE_DBSTATUS_CACHE_HIT+1 );
+      assert( SQLITE_DBSTATUS_CACHE_WRITE==SQLITE_DBSTATUS_CACHE_HIT+2 );
 
       for(i=0; i<db->nDb; i++){
         if( db->aDb[i].pBt ){

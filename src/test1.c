@@ -800,7 +800,7 @@ struct dstr {
 ** Append text to a dstr
 */
 static void dstrAppend(struct dstr *p, const char *z, int divider){
-  int n = strlen(z);
+  int n = (int)strlen(z);
   if( p->nUsed + n + 2 > p->nAlloc ){
     char *zNew;
     p->nAlloc = p->nAlloc*2 + n + 200;
@@ -3067,7 +3067,7 @@ static int test_bind_int64(
 ){
   sqlite3_stmt *pStmt;
   int idx;
-  i64 value;
+  Tcl_WideInt value;
   int rc;
 
   if( objc!=4 ){
@@ -3263,7 +3263,7 @@ static int test_bind_text16(
   char *value;
   int rc;
 
-  void (*xDel)() = (objc==6?SQLITE_STATIC:SQLITE_TRANSIENT);
+  void (*xDel)(void*) = (objc==6?SQLITE_STATIC:SQLITE_TRANSIENT);
   Tcl_Obj *oStmt    = objv[objc-4];
   Tcl_Obj *oN       = objv[objc-3];
   Tcl_Obj *oString  = objv[objc-2];
@@ -3609,10 +3609,10 @@ static int test_prepare(
   if( sqlite3TestErrCode(interp, db, rc) ) return TCL_ERROR;
   if( zTail && objc>=5 ){
     if( bytes>=0 ){
-      bytes = bytes - (zTail-zSql);
+      bytes = bytes - (int)(zTail-zSql);
     }
-    if( strlen(zTail)<bytes ){
-      bytes = strlen(zTail);
+    if( (int)strlen(zTail)<bytes ){
+      bytes = (int)strlen(zTail);
     }
     Tcl_ObjSetVar2(interp, objv[4], 0, Tcl_NewStringObj(zTail, bytes), 0);
   }
@@ -3667,7 +3667,7 @@ static int test_prepare_v2(
   if( sqlite3TestErrCode(interp, db, rc) ) return TCL_ERROR;
   if( zTail && objc>=5 ){
     if( bytes>=0 ){
-      bytes = bytes - (zTail-zSql);
+      bytes = bytes - (int)(zTail-zSql);
     }
     Tcl_ObjSetVar2(interp, objv[4], 0, Tcl_NewStringObj(zTail, bytes), 0);
   }
@@ -3768,7 +3768,7 @@ static int test_prepare16(
 
   if( objc>=5 ){
     if( zTail ){
-      objlen = objlen - ((u8 *)zTail-(u8 *)zSql);
+      objlen = objlen - (int)((u8 *)zTail-(u8 *)zSql);
     }else{
       objlen = 0;
     }
@@ -3828,7 +3828,7 @@ static int test_prepare16_v2(
 
   if( objc>=5 ){
     if( zTail ){
-      objlen = objlen - ((u8 *)zTail-(u8 *)zSql);
+      objlen = objlen - (int)((u8 *)zTail-(u8 *)zSql);
     }else{
       objlen = 0;
     }
@@ -4703,7 +4703,7 @@ static int test_soft_heap_limit(
   Tcl_Obj *CONST objv[]
 ){
   sqlite3_int64 amt;
-  sqlite3_int64 N = -1;
+  Tcl_WideInt N = -1;
   if( objc!=1 && objc!=2 ){
     Tcl_WrongNumArgs(interp, 1, objv, "?N?");
     return TCL_ERROR;
@@ -5096,7 +5096,7 @@ static int file_control_sizehint_test(
   int objc,              /* Number of arguments */
   Tcl_Obj *CONST objv[]  /* Command arguments */
 ){
-  sqlite3_int64 nSize;            /* Hinted size */
+  Tcl_WideInt nSize;              /* Hinted size */
   char *zDb;                      /* Db name ("main", "temp" etc.) */
   sqlite3 *db;                    /* Database handle */
   int rc;                         /* file_control() return code */
@@ -5318,6 +5318,38 @@ static int file_control_vfsname(
   sqlite3_file_control(db, zDbName, SQLITE_FCNTL_VFSNAME,(void*)&zVfsName);
   Tcl_AppendResult(interp, zVfsName, (char*)0);
   sqlite3_free(zVfsName);
+  return TCL_OK;  
+}
+
+/*
+** tclcmd:   file_control_tempfilename DB ?AUXDB?
+**
+** Return a string that is a temporary filename
+*/
+static int file_control_tempfilename(
+  ClientData clientData, /* Pointer to sqlite3_enable_XXX function */
+  Tcl_Interp *interp,    /* The TCL interpreter that invoked this command */
+  int objc,              /* Number of arguments */
+  Tcl_Obj *CONST objv[]  /* Command arguments */
+){
+  sqlite3 *db;
+  const char *zDbName = "main";
+  char *zTName = 0;
+
+  if( objc!=2 && objc!=3 ){
+    Tcl_AppendResult(interp, "wrong # args: should be \"",
+        Tcl_GetStringFromObj(objv[0], 0), " DB ?AUXDB?", 0);
+    return TCL_ERROR;
+  }
+  if( getDbPointer(interp, Tcl_GetString(objv[1]), &db) ){
+    return TCL_ERROR;
+  }
+  if( objc==3 ){
+    zDbName = Tcl_GetString(objv[2]);
+  }
+  sqlite3_file_control(db, zDbName, SQLITE_FCNTL_TEMPFILENAME, (void*)&zTName);
+  Tcl_AppendResult(interp, zTName, (char*)0);
+  sqlite3_free(zTName);
   return TCL_OK;  
 }
 
@@ -5816,6 +5848,7 @@ struct win32FileLocker {
 
 
 #if SQLITE_OS_WIN
+#include <process.h>
 /*
 ** The background thread that does file locking.
 */
@@ -5927,20 +5960,20 @@ static int optimization_control(
   sqlite3 *db;
   const char *zOpt;
   int onoff;
-  int mask;
+  int mask = 0;
   static const struct {
     const char *zOptName;
     int mask;
   } aOpt[] = {
-    { "all",              SQLITE_OptMask        },
+    { "all",              SQLITE_AllOpts        },
     { "query-flattener",  SQLITE_QueryFlattener },
     { "column-cache",     SQLITE_ColumnCache    },
-    { "index-sort",       SQLITE_IndexSort      },
-    { "index-search",     SQLITE_IndexSearch    },
-    { "index-cover",      SQLITE_IndexCover     },
     { "groupby-order",    SQLITE_GroupByOrder   },
     { "factor-constants", SQLITE_FactorOutConst },
     { "real-as-int",      SQLITE_IdxRealAsInt   },
+    { "distinct-opt",     SQLITE_DistinctOpt    },
+    { "cover-idx-scan",   SQLITE_CoverIdxScan   },
+    { "order-by-idx-join",SQLITE_OrderByIdxJoin },
   };
 
   if( objc!=4 ){
@@ -6128,7 +6161,7 @@ int Sqlitetest1_Init(Tcl_Interp *interp){
 #endif
 #ifdef SQLITE_ENABLE_COLUMN_METADATA
 {"sqlite3_column_database_name16",
-  test_stmt_utf16, sqlite3_column_database_name16},
+  test_stmt_utf16, (void*)sqlite3_column_database_name16},
 {"sqlite3_column_table_name16", test_stmt_utf16, (void*)sqlite3_column_table_name16},
 {"sqlite3_column_origin_name16", test_stmt_utf16, (void*)sqlite3_column_origin_name16},
 #endif
@@ -6149,6 +6182,7 @@ int Sqlitetest1_Init(Tcl_Interp *interp){
      { "file_control_persist_wal",    file_control_persist_wal,     0   },
      { "file_control_powersafe_overwrite",file_control_powersafe_overwrite,0},
      { "file_control_vfsname",        file_control_vfsname,         0   },
+     { "file_control_tempfilename",   file_control_tempfilename,    0   },
      { "sqlite3_vfs_list",           vfs_list,     0   },
      { "sqlite3_create_function_v2", test_create_function_v2, 0 },
 
@@ -6286,6 +6320,8 @@ int Sqlitetest1_Init(Tcl_Interp *interp){
       (char*)&sqlite_static_bind_nbyte, TCL_LINK_INT);
   Tcl_LinkVar(interp, "sqlite_temp_directory",
       (char*)&sqlite3_temp_directory, TCL_LINK_STRING);
+  Tcl_LinkVar(interp, "sqlite_data_directory",
+      (char*)&sqlite3_data_directory, TCL_LINK_STRING);
   Tcl_LinkVar(interp, "bitmask_size",
       (char*)&bitmask_size, TCL_LINK_INT|TCL_LINK_READ_ONLY);
   Tcl_LinkVar(interp, "sqlite_sync_count",

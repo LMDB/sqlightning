@@ -111,7 +111,7 @@ void sqlite3BeginTrigger(
     iDb = 1;
     pName = pName1;
   }else{
-    /* Figure out the db that the the trigger will be created in */
+    /* Figure out the db that the trigger will be created in */
     iDb = sqlite3TwoPartName(pParse, pName1, pName2, &pName);
     if( iDb<0 ){
       goto trigger_cleanup;
@@ -728,6 +728,15 @@ static int codeTriggerProgram(
     **   INSERT OR IGNORE INTO t1 ... ;  -- insert into t2 uses IGNORE policy
     */
     pParse->eOrconf = (orconf==OE_Default)?pStep->orconf:(u8)orconf;
+
+    /* Clear the cookieGoto flag. When coding triggers, the cookieGoto 
+    ** variable is used as a flag to indicate to sqlite3ExprCodeConstants()
+    ** that it is not safe to refactor constants (this happens after the
+    ** start of the first loop in the SQL statement is coded - at that 
+    ** point code may be conditionally executed, so it is no longer safe to 
+    ** initialize constant register values).  */
+    assert( pParse->cookieGoto==0 || pParse->cookieGoto==-1 );
+    pParse->cookieGoto = 0;
 
     switch( pStep->op ){
       case TK_UPDATE: {

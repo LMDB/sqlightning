@@ -48,6 +48,9 @@ static const char * const azCompileOpt[] = {
 #ifdef SQLITE_COVERAGE_TEST
   "COVERAGE_TEST",
 #endif
+#ifdef SQLITE_CURDIR
+  "CURDIR",
+#endif
 #ifdef SQLITE_DEBUG
   "DEBUG",
 #endif
@@ -334,6 +337,9 @@ static const char * const azCompileOpt[] = {
 #endif
 #ifdef SQLITE_PROXY_DEBUG
   "PROXY_DEBUG",
+#endif
+#ifdef SQLITE_RTREE_INT_ONLY
+  "RTREE_INT_ONLY",
 #endif
 #ifdef SQLITE_SECURE_DELETE
   "SECURE_DELETE",

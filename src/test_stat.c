@@ -326,12 +326,13 @@ static int statDecodePage(Btree *pBt, StatPage *p){
           u64 dummy;
           iOff += sqlite3GetVarint(&aData[iOff], &dummy);
         }
-        if( nPayload>p->nMxPayload ) p->nMxPayload = nPayload;
+        if( nPayload>(u32)p->nMxPayload ) p->nMxPayload = nPayload;
         getLocalPayload(nUsable, p->flags, nPayload, &nLocal);
         pCell->nLocal = nLocal;
-        assert( nPayload>=nLocal );
+        assert( nLocal>=0 );
+        assert( nPayload>=(u32)nLocal );
         assert( nLocal<=(nUsable-35) );
-        if( nPayload>nLocal ){
+        if( nPayload>(u32)nLocal ){
           int j;
           int nOvfl = ((nPayload - nLocal) + nUsable-4 - 1) / (nUsable - 4);
           pCell->nLastOvfl = (nPayload-nLocal) - (nOvfl-1) * (nUsable-4);
@@ -380,7 +381,7 @@ static void statSizeAndOffset(StatCursor *pCsr){
   x[0] = pCsr->iPageno;
   if( sqlite3OsFileControl(fd, 230440, &x)==SQLITE_OK ){
     pCsr->iOffset = x[0];
-    pCsr->szPage = x[1];
+    pCsr->szPage = (int)x[1];
   }
 }
 
@@ -402,7 +403,7 @@ static int statNext(sqlite3_vtab_cursor *pCursor){
     rc = sqlite3_step(pCsr->pStmt);
     if( rc==SQLITE_ROW ){
       int nPage;
-      u32 iRoot = sqlite3_column_int64(pCsr->pStmt, 1);
+      u32 iRoot = (u32)sqlite3_column_int64(pCsr->pStmt, 1);
       sqlite3PagerPagecount(pPager, &nPage);
       if( nPage==0 ){
         pCsr->isEof = 1;

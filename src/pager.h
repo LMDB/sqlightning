@@ -137,11 +137,14 @@ int sqlite3PagerOpenSavepoint(Pager *pPager, int n);
 int sqlite3PagerSavepoint(Pager *pPager, int op, int iSavepoint);
 int sqlite3PagerSharedLock(Pager *pPager);
 
-int sqlite3PagerCheckpoint(Pager *pPager, int, int*, int*);
-int sqlite3PagerWalSupported(Pager *pPager);
-int sqlite3PagerWalCallback(Pager *pPager);
-int sqlite3PagerOpenWal(Pager *pPager, int *pisOpen);
-int sqlite3PagerCloseWal(Pager *pPager);
+#ifndef SQLITE_OMIT_WAL
+  int sqlite3PagerCheckpoint(Pager *pPager, int, int*, int*);
+  int sqlite3PagerWalSupported(Pager *pPager);
+  int sqlite3PagerWalCallback(Pager *pPager);
+  int sqlite3PagerOpenWal(Pager *pPager, int *pisOpen);
+  int sqlite3PagerCloseWal(Pager *pPager);
+#endif
+
 #ifdef SQLITE_ENABLE_ZIPVFS
   int sqlite3PagerWalFramesize(Pager *pPager);
 #endif
@@ -150,7 +153,7 @@ int sqlite3PagerCloseWal(Pager *pPager);
 u8 sqlite3PagerIsreadonly(Pager*);
 int sqlite3PagerRefcount(Pager*);
 int sqlite3PagerMemUsed(Pager*);
-const char *sqlite3PagerFilename(Pager*);
+const char *sqlite3PagerFilename(Pager*, int);
 const sqlite3_vfs *sqlite3PagerVfs(Pager*);
 sqlite3_file *sqlite3PagerFile(Pager*);
 const char *sqlite3PagerJournalname(Pager*);
@@ -159,6 +162,7 @@ void *sqlite3PagerTempSpace(Pager*);
 int sqlite3PagerIsMemdb(Pager*);
 void sqlite3PagerCacheStat(Pager *, int, int, int *);
 void sqlite3PagerClearCache(Pager *);
+int sqlite3SectorSize(sqlite3_file *);
 
 /* Functions used to truncate the database file. */
 void sqlite3PagerTruncateImage(Pager*,Pgno);

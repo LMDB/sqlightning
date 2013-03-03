@@ -71,17 +71,11 @@ int sqlite3_finalize(sqlite3_stmt *pStmt){
   }else{
     Vdbe *v = (Vdbe*)pStmt;
     sqlite3 *db = v->db;
-#if SQLITE_THREADSAFE
-    sqlite3_mutex *mutex;
-#endif
     if( vdbeSafety(v) ) return SQLITE_MISUSE_BKPT;
-#if SQLITE_THREADSAFE
-    mutex = v->db->mutex;
-#endif
-    sqlite3_mutex_enter(mutex);
+    sqlite3_mutex_enter(db->mutex);
     rc = sqlite3VdbeFinalize(v);
     rc = sqlite3ApiExit(db, rc);
-    sqlite3_mutex_leave(mutex);
+    sqlite3LeaveMutexAndCloseZombie(db);
   }
   return rc;
 }
@@ -484,10 +478,12 @@ int sqlite3_step(sqlite3_stmt *pStmt){
   }
   db = v->db;
   sqlite3_mutex_enter(db->mutex);
+  v->doingRerun = 0;
   while( (rc = sqlite3Step(v))==SQLITE_SCHEMA
          && cnt++ < SQLITE_MAX_SCHEMA_RETRY
          && (rc2 = rc = sqlite3Reprepare(v))==SQLITE_OK ){
     sqlite3_reset(pStmt);
+    v->doingRerun = 1;
     assert( v->expired==0 );
   }
   if( rc2!=SQLITE_OK && ALWAYS(v->isPrepareV2) && ALWAYS(db->pErr) ){

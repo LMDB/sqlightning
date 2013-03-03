@@ -57,6 +57,12 @@ static void set_options(Tcl_Interp *interp){
   Tcl_SetVar2(interp, "sqlite_options","casesensitivelike","0",TCL_GLOBAL_ONLY);
 #endif
 
+#ifdef SQLITE_CURDIR
+  Tcl_SetVar2(interp, "sqlite_options", "curdir", "1", TCL_GLOBAL_ONLY);
+#else
+  Tcl_SetVar2(interp, "sqlite_options", "curdir", "0", TCL_GLOBAL_ONLY);
+#endif
+
 #ifdef SQLITE_DEBUG
   Tcl_SetVar2(interp, "sqlite_options", "debug", "1", TCL_GLOBAL_ONLY);
 #else
@@ -307,6 +313,18 @@ static void set_options(Tcl_Interp *interp){
   Tcl_SetVar2(interp, "sqlite_options", "fts3", "0", TCL_GLOBAL_ONLY);
 #endif
 
+#if defined(SQLITE_ENABLE_FTS3) && defined(SQLITE_ENABLE_FTS4_UNICODE61)
+  Tcl_SetVar2(interp, "sqlite_options", "fts3_unicode", "1", TCL_GLOBAL_ONLY);
+#else
+  Tcl_SetVar2(interp, "sqlite_options", "fts3_unicode", "0", TCL_GLOBAL_ONLY);
+#endif
+
+#ifdef SQLITE_DISABLE_FTS4_DEFERRED
+  Tcl_SetVar2(interp, "sqlite_options", "fts4_deferred", "0", TCL_GLOBAL_ONLY);
+#else
+  Tcl_SetVar2(interp, "sqlite_options", "fts4_deferred", "1", TCL_GLOBAL_ONLY);
+#endif
+
 #ifdef SQLITE_OMIT_GET_TABLE
   Tcl_SetVar2(interp, "sqlite_options", "gettable", "0", TCL_GLOBAL_ONLY);
 #else
@@ -418,6 +436,12 @@ Tcl_SetVar2(interp, "sqlite_options", "long_double",
   Tcl_SetVar2(interp, "sqlite_options", "rtree", "1", TCL_GLOBAL_ONLY);
 #else
   Tcl_SetVar2(interp, "sqlite_options", "rtree", "0", TCL_GLOBAL_ONLY);
+#endif
+
+#ifdef SQLITE_RTREE_INT_ONLY
+  Tcl_SetVar2(interp, "sqlite_options", "rtree_int_only", "1", TCL_GLOBAL_ONLY);
+#else
+  Tcl_SetVar2(interp, "sqlite_options", "rtree_int_only", "0", TCL_GLOBAL_ONLY);
 #endif
 
 #ifdef SQLITE_OMIT_SCHEMA_PRAGMAS
@@ -598,6 +622,21 @@ Tcl_SetVar2(interp, "sqlite_options", "long_double",
     Tcl_LinkVar(interp, "TEMP_STORE", (char *)&(cv_TEMP_STORE),
                 TCL_LINK_INT | TCL_LINK_READ_ONLY);
   }
+
+#ifdef _MSC_VER
+  {
+    static const int cv__MSC_VER = 1;
+    Tcl_LinkVar(interp, "_MSC_VER", (char *)&(cv__MSC_VER),
+                TCL_LINK_INT | TCL_LINK_READ_ONLY);
+  }
+#endif
+#ifdef __GNUC__
+  {
+    static const int cv___GNUC__ = 1;
+    Tcl_LinkVar(interp, "__GNUC__", (char *)&(cv___GNUC__),
+                TCL_LINK_INT | TCL_LINK_READ_ONLY);
+  }
+#endif
 }
 
 
