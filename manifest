@@ -1,12 +1,12 @@
-C Version\s3.7.14
-D 2012-09-03T15:42:36.217
+C Version\s3.7.14.1
+D 2012-10-04T19:37:12.994
 F Makefile.arm-wince-mingw32ce-gcc d6df77f1f48d690bd73162294bbba7f59507c72f
 F Makefile.in abd5c10d21d1395f140d9e50ea999df8fa4d6376
 F Makefile.linux-gcc 91d710bdc4998cb015f39edf3cb314ec4f4d7e23
 F Makefile.msc 2d696f01c228995e98b3b953a08b7bba1d48c130
 F Makefile.vxworks 879f034a64062a364b21000266bbd5bc6e0c19b9
 F README cd04a36fbc7ea56932a4052d7d0b7f09f27c33d6
-F VERSION a71848df48082f1d6585d4b0819d530fc455485d
+F VERSION 9694dff497fc7e53037a5890f30ab069c26e8ab7
 F aclocal.m4 a5c22d164aff7ed549d53a90fa56d56955281f50
 F addopcodes.awk 17dc593f791f874d2c23a0f9360850ded0286531
 F art/sqlite370.eps aa97a671332b432a54e1d74ff5e8775be34200c2
@@ -15,7 +15,7 @@ F art/sqlite370.jpg d512473dae7e378a67e28ff96a34da7cb331def2
 F config.guess 226d9a188c6196f3033ffc651cbc9dcee1a42977
 F config.h.in 0921066a13130082764ab4ab6456f7b5bebe56de
 F config.sub 9ebe4c3b3dab6431ece34f16828b594fb420da55
-F configure e2d0e3b67d2b1b1049d389fd671275d79bb80457 x
+F configure e2c3b28dec7f5d1f72dd7465c87bb37f6af1931f x
 F configure.ac 6e909664785b8184db2179013cd9d574f96ca3a3
 F contrib/sqlitecon.tcl 210a913ad63f9f991070821e599d600bd913e0ad
 F doc/lemon.html 334dbf6621b8fb8790297ec1abf3cfa4621709d1
@@ -123,7 +123,7 @@ F src/auth.c 523da7fb4979469955d822ff9298352d6b31de34
 F src/backup.c 5b31b24d6814b11de763debf342c8cd0a15a4910
 F src/bitvec.c 26675fe8e431dc555e6f2d0e11e651d172234aa1
 F src/btmutex.c 976f45a12e37293e32cae0281b15a21d48a8aaa7
-F src/btree.c 9cf6de113d23d47967df24b8d8ce6501c879d7e6
+F src/btree.c 97edf88abd2b66f31886ba977d2b3b2a21d81d4c
 F src/btree.h 4aee02e879211bfcfd3f551769578d2e940ab6c2
 F src/btreeInt.h 4e5c2bd0f9b36b2a815a6d84f771a61a65830621
 F src/build.c a3b700afd475e6387da59be6f2e86161e80d6d87
@@ -185,7 +185,7 @@ F src/sqliteInt.h 053e03a532beb909ead2df0721db67cdb4c48ae8
 F src/sqliteLimit.h 164b0e6749d31e0daa1a4589a169d31c0dec7b3d
 F src/status.c 35939e7e03abf1b7577ce311f48f682c40de3208
 F src/table.c 2cd62736f845d82200acfa1287e33feb3c15d62e
-F src/tclsqlite.c fe5406573e1527957e00dcaf51edd9d8bd31b918
+F src/tclsqlite.c d20022c647aa7a871d7b4038c4ec971cafe39744
 F src/test1.c 3d70f7c5987f186884cfebbfa7151a7d3d67d86e
 F src/test2.c 4178056dd1e7d70f954ad8a1e3edb71a2a784daf
 F src/test3.c 3c3c2407fa6ec7a19e24ae23f7cb439d0275a60d
@@ -251,7 +251,7 @@ F src/vtab.c d2c54fd22aa83eb34fc6f7cd9b097f2fc2b1e9de
 F src/wal.c 5acb3e7bbd31f10ba39acad9ce6b399055337a9d
 F src/wal.h 29c197540b19044e6cd73487017e5e47a1d3dac6
 F src/walker.c 3d75ba73de15e0f8cd0737643badbeb0e002f07b
-F src/where.c 22783f4275f6fc09b663115a6091837cb5c510e0
+F src/where.c e74f9ed463b0153e7f2a0e5f291c2be16ae76b35
 F test/8_3_names.test 631ea964a3edb091cf73c3b540f6bcfdb36ce823
 F test/aggerror.test a867e273ef9e3d7919f03ef4f0e8c0d2767944f2
 F test/aggnested.test 0be144b453e0622a085fae8665c32f5676708e00
@@ -734,7 +734,7 @@ F test/syscall.test bea9bf329bff733c791310244617c2a76974e64a
 F test/sysfault.test c79441d88d23696fbec7b147dba98d42a04f523f
 F test/table.test a59d985ca366e39b17b175f387f9d5db5a18d4e2
 F test/tableapi.test 2674633fa95d80da917571ebdd759a14d9819126
-F test/tclsqlite.test 1597d353308531527583481d14d9da52ea8ed0af
+F test/tclsqlite.test 952b772830bd380c9b5f58c03fb374189be53828
 F test/tempdb.test 19d0f66e2e3eeffd68661a11c83ba5e6ace9128c
 F test/temptable.test 51edd31c65ed1560dd600b1796e8325df96318e2
 F test/temptrigger.test 26670ed7a39cf2296a7f0a9e0a1d7bdb7abe936d
@@ -966,7 +966,7 @@ F test/where9.test ae98dc22ef9b6f2bc81e9f164e41b38faa9bda06
 F test/whereA.test 24c234263c8fe358f079d5e57d884fb569d2da0a
 F test/whereB.test 0def95db3bdec220a731c7e4bec5930327c1d8c5
 F test/whereC.test 13ff5ec0dba407c0e0c075980c75b3275a6774e5
-F test/whereD.test 304ccbe3c77e0d0764f37c91d43b8c4792a5e02f
+F test/whereD.test 11945e79899a97958d87d1e5ac6ae5abd827356b
 F test/wherelimit.test 5e9fd41e79bb2b2d588ed999d641d9c965619b31
 F test/win32lock.test b2a539e85ae6b2d78475e016a9636b4451dc7fb9
 F test/zeroblob.test caaecfb4f908f7bc086ed238668049f96774d688
@@ -1014,10 +1014,10 @@ F tool/vdbe-compress.tcl d70ea6d8a19e3571d7ab8c9b75cba86d1173ff0f
 F tool/warnings-clang.sh f6aa929dc20ef1f856af04a730772f59283631d4
 F tool/warnings.sh fbc018d67fd7395f440c28f33ef0f94420226381
 F tool/win/sqlite.vsix 67d8a99aceb56384a81b3f30d6c71743146d2cc9
-P ebb08d0b4d1ed674e4a23c3754206ca2df9063ff
-R 8bdf9ef517616ac5a5043f12bec4acdb
+P 81fd941da62956e32d1c4ffcdb39abecba7a6f3b
+R a82bf185a73888ab1f23d02429bade9e
 T +bgcolor * #d0c0ff
 T +sym-release *
-T +sym-version-3.7.14 *
+T +sym-version-3.7.14.1 *
 U drh
-Z 126ab1aaea0f3a8cb5c4792cf0a82989
+Z 002ec98f7f5b76deaac3a726393245f3
