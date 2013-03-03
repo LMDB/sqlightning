@@ -575,8 +575,8 @@ void sqlite3VdbeChangeP5(Vdbe *p, u8 val){
 ** the address of the next instruction to be coded.
 */
 void sqlite3VdbeJumpHere(Vdbe *p, int addr){
-  assert( addr>=0 );
-  sqlite3VdbeChangeP2(p, addr, p->nOp);
+  assert( addr>=0 || p->db->mallocFailed );
+  if( addr>=0 ) sqlite3VdbeChangeP2(p, addr, p->nOp);
 }
 
 
@@ -781,30 +781,29 @@ void sqlite3VdbeChangeP4(Vdbe *p, int addr, const char *zP4, int n){
 ** makes the code easier to read during debugging.  None of this happens
 ** in a production build.
 */
-void sqlite3VdbeComment(Vdbe *p, const char *zFormat, ...){
-  va_list ap;
-  if( !p ) return;
+static void vdbeVComment(Vdbe *p, const char *zFormat, va_list ap){
   assert( p->nOp>0 || p->aOp==0 );
   assert( p->aOp==0 || p->aOp[p->nOp-1].zComment==0 || p->db->mallocFailed );
   if( p->nOp ){
-    char **pz = &p->aOp[p->nOp-1].zComment;
+    assert( p->aOp );
+    sqlite3DbFree(p->db, p->aOp[p->nOp-1].zComment);
+    p->aOp[p->nOp-1].zComment = sqlite3VMPrintf(p->db, zFormat, ap);
+  }
+}
+void sqlite3VdbeComment(Vdbe *p, const char *zFormat, ...){
+  va_list ap;
+  if( p ){
     va_start(ap, zFormat);
-    sqlite3DbFree(p->db, *pz);
-    *pz = sqlite3VMPrintf(p->db, zFormat, ap);
+    vdbeVComment(p, zFormat, ap);
     va_end(ap);
   }
 }
 void sqlite3VdbeNoopComment(Vdbe *p, const char *zFormat, ...){
   va_list ap;
-  if( !p ) return;
-  sqlite3VdbeAddOp0(p, OP_Noop);
-  assert( p->nOp>0 || p->aOp==0 );
-  assert( p->aOp==0 || p->aOp[p->nOp-1].zComment==0 || p->db->mallocFailed );
-  if( p->nOp ){
-    char **pz = &p->aOp[p->nOp-1].zComment;
+  if( p ){
+    sqlite3VdbeAddOp0(p, OP_Noop);
     va_start(ap, zFormat);
-    sqlite3DbFree(p->db, *pz);
-    *pz = sqlite3VMPrintf(p->db, zFormat, ap);
+    vdbeVComment(p, zFormat, ap);
     va_end(ap);
   }
 }
@@ -1142,7 +1141,7 @@ int sqlite3VdbeList(
   sqlite3 *db = p->db;                 /* The database connection */
   int i;                               /* Loop counter */
   int rc = SQLITE_OK;                  /* Return code */
-  Mem *pMem = p->pResultSet = &p->aMem[1];  /* First Mem of result set */
+  Mem *pMem = &p->aMem[1];             /* First Mem of result set */
 
   assert( p->explain );
   assert( p->magic==VDBE_MAGIC_RUN );
@@ -1153,6 +1152,7 @@ int sqlite3VdbeList(
   ** sqlite3_column_text16(), causing a translation to UTF-16 encoding.
   */
   releaseMemArray(pMem, 8);
+  p->pResultSet = 0;
 
   if( p->rc==SQLITE_NOMEM ){
     /* This happens if a malloc() inside a call to sqlite3_column_text() or
@@ -1307,6 +1307,7 @@ int sqlite3VdbeList(
     }
 
     p->nResColumn = 8 - 4*(p->explain-1);
+    p->pResultSet = &p->aMem[1];
     p->rc = SQLITE_OK;
     rc = SQLITE_ROW;
   }
@@ -2310,6 +2311,30 @@ void sqlite3VdbeResetStepResult(Vdbe *p){
 }
 
 /*
+** Copy the error code and error message belonging to the VDBE passed
+** as the first argument to its database handle (so that they will be 
+** returned by calls to sqlite3_errcode() and sqlite3_errmsg()).
+**
+** This function does not clear the VDBE error code or message, just
+** copies them to the database handle.
+*/
+int sqlite3VdbeTransferError(Vdbe *p){
+  sqlite3 *db = p->db;
+  int rc = p->rc;
+  if( p->zErrMsg ){
+    u8 mallocFailed = db->mallocFailed;
+    sqlite3BeginBenignMalloc();
+    sqlite3ValueSetStr(db->pErr, -1, p->zErrMsg, SQLITE_UTF8, SQLITE_TRANSIENT);
+    sqlite3EndBenignMalloc();
+    db->mallocFailed = mallocFailed;
+    db->errCode = rc;
+  }else{
+    sqlite3Error(db, rc, 0);
+  }
+  return rc;
+}
+
+/*
 ** Clean up a VDBE after execution but do not delete the VDBE just yet.
 ** Write any error messages into *pzErrMsg.  Return the result code.
 **
@@ -2336,18 +2361,9 @@ int sqlite3VdbeReset(Vdbe *p){
   ** instructions yet, leave the main database error information unchanged.
   */
   if( p->pc>=0 ){
-    if( p->zErrMsg ){
-      sqlite3BeginBenignMalloc();
-      sqlite3ValueSetStr(db->pErr,-1,p->zErrMsg,SQLITE_UTF8,SQLITE_TRANSIENT);
-      sqlite3EndBenignMalloc();
-      db->errCode = p->rc;
-      sqlite3DbFree(db, p->zErrMsg);
-      p->zErrMsg = 0;
-    }else if( p->rc ){
-      sqlite3Error(db, p->rc, 0);
-    }else{
-      sqlite3Error(db, SQLITE_OK, 0);
-    }
+    sqlite3VdbeTransferError(p);
+    sqlite3DbFree(db, p->zErrMsg);
+    p->zErrMsg = 0;
     if( p->runOnlyOnce ) p->expired = 1;
   }else if( p->rc && p->expired ){
     /* The expired flag was set on the VDBE before the first call
@@ -3062,7 +3078,7 @@ int sqlite3VdbeIdxRowid(sqlite3 *db, BtCursor *pCur, i64 *rowid){
   ** this code can safely assume that nCellKey is 32-bits  
   */
   assert( sqlite3BtreeCursorIsValid(pCur) );
-  rc = sqlite3BtreeKeySize(pCur, &nCellKey);
+  VVA_ONLY(rc =) sqlite3BtreeKeySize(pCur, &nCellKey);
   assert( rc==SQLITE_OK );     /* pCur is always valid so KeySize cannot fail */
   assert( (nCellKey & SQLITE_MAX_U32)==(u64)nCellKey );
 
@@ -3137,7 +3153,7 @@ int sqlite3VdbeIdxKeyCompare(
   Mem m;
 
   assert( sqlite3BtreeCursorIsValid(pCur) );
-  rc = sqlite3BtreeKeySize(pCur, &nCellKey);
+  VVA_ONLY(rc =) sqlite3BtreeKeySize(pCur, &nCellKey);
   assert( rc==SQLITE_OK );    /* pCur is always valid so KeySize cannot fail */
   /* nCellKey will always be between 0 and 0xffffffff because of the say
   ** that btreeParseCellPtr() and sqlite3GetVarint32() are implemented */

@@ -543,14 +543,14 @@ int sqlite3_backup_step(sqlite3_backup *p, int nPage){
 */
 int sqlite3_backup_finish(sqlite3_backup *p){
   sqlite3_backup **pp;                 /* Ptr to head of pagers backup list */
-  sqlite3_mutex *mutex;                /* Mutex to protect source database */
+  MUTEX_LOGIC( sqlite3_mutex *mutex; ) /* Mutex to protect source database */
   int rc;                              /* Value to return */
 
   /* Enter the mutexes */
   if( p==0 ) return SQLITE_OK;
   sqlite3_mutex_enter(p->pSrcDb->mutex);
   sqlite3BtreeEnter(p->pSrc);
-  mutex = p->pSrcDb->mutex;
+  MUTEX_LOGIC( mutex = p->pSrcDb->mutex; )
   if( p->pDestDb ){
     sqlite3_mutex_enter(p->pDestDb->mutex);
   }
@@ -669,9 +669,17 @@ void sqlite3BackupRestart(sqlite3_backup *pBackup){
 */
 int sqlite3BtreeCopyFile(Btree *pTo, Btree *pFrom){
   int rc;
+  sqlite3_file *pFd;              /* File descriptor for database pTo */
   sqlite3_backup b;
   sqlite3BtreeEnter(pTo);
   sqlite3BtreeEnter(pFrom);
+
+  assert( sqlite3BtreeIsInTrans(pTo) );
+  pFd = sqlite3PagerFile(sqlite3BtreePager(pTo));
+  if( pFd->pMethods ){
+    i64 nByte = sqlite3BtreeGetPageSize(pFrom)*(i64)sqlite3BtreeLastPage(pFrom);
+    sqlite3OsFileControl(pFd, SQLITE_FCNTL_OVERWRITE, &nByte);
+  }
 
   /* Set up an sqlite3_backup object. sqlite3_backup.pDestDb must be set
   ** to 0. This is used by the implementations of sqlite3_backup_step()
@@ -696,8 +704,11 @@ int sqlite3BtreeCopyFile(Btree *pTo, Btree *pFrom){
   rc = sqlite3_backup_finish(&b);
   if( rc==SQLITE_OK ){
     pTo->pBt->pageSizeFixed = 0;
+  }else{
+    sqlite3PagerClearCache(sqlite3BtreePager(b.pDest));
   }
 
+  assert( sqlite3BtreeIsInTrans(pTo)==0 );
   sqlite3BtreeLeave(pFrom);
   sqlite3BtreeLeave(pTo);
   return rc;

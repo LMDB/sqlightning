@@ -1981,7 +1981,7 @@ static void destroyTable(Parse *pParse, Table *pTab){
 }
 
 /*
-** Remove entries from the sqlite_stat1 and sqlite_stat2 tables
+** Remove entries from the sqlite_statN tables (for N in (1,2,3))
 ** after a DROP INDEX or DROP TABLE command.
 */
 static void sqlite3ClearStatTables(
@@ -1990,17 +1990,88 @@ static void sqlite3ClearStatTables(
   const char *zType,     /* "idx" or "tbl" */
   const char *zName      /* Name of index or table */
 ){
-  static const char *azStatTab[] = { "sqlite_stat1", "sqlite_stat2" };
   int i;
   const char *zDbName = pParse->db->aDb[iDb].zName;
-  for(i=0; i<ArraySize(azStatTab); i++){
-    if( sqlite3FindTable(pParse->db, azStatTab[i], zDbName) ){
+  for(i=1; i<=3; i++){
+    char zTab[24];
+    sqlite3_snprintf(sizeof(zTab),zTab,"sqlite_stat%d",i);
+    if( sqlite3FindTable(pParse->db, zTab, zDbName) ){
       sqlite3NestedParse(pParse,
         "DELETE FROM %Q.%s WHERE %s=%Q",
-        zDbName, azStatTab[i], zType, zName
+        zDbName, zTab, zType, zName
       );
     }
   }
+}
+
+/*
+** Generate code to drop a table.
+*/
+void sqlite3CodeDropTable(Parse *pParse, Table *pTab, int iDb, int isView){
+  Vdbe *v;
+  sqlite3 *db = pParse->db;
+  Trigger *pTrigger;
+  Db *pDb = &db->aDb[iDb];
+
+  v = sqlite3GetVdbe(pParse);
+  assert( v!=0 );
+  sqlite3BeginWriteOperation(pParse, 1, iDb);
+
+#ifndef SQLITE_OMIT_VIRTUALTABLE
+  if( IsVirtual(pTab) ){
+    sqlite3VdbeAddOp0(v, OP_VBegin);
+  }
+#endif
+
+  /* Drop all triggers associated with the table being dropped. Code
+  ** is generated to remove entries from sqlite_master and/or
+  ** sqlite_temp_master if required.
+  */
+  pTrigger = sqlite3TriggerList(pParse, pTab);
+  while( pTrigger ){
+    assert( pTrigger->pSchema==pTab->pSchema || 
+        pTrigger->pSchema==db->aDb[1].pSchema );
+    sqlite3DropTriggerPtr(pParse, pTrigger);
+    pTrigger = pTrigger->pNext;
+  }
+
+#ifndef SQLITE_OMIT_AUTOINCREMENT
+  /* Remove any entries of the sqlite_sequence table associated with
+  ** the table being dropped. This is done before the table is dropped
+  ** at the btree level, in case the sqlite_sequence table needs to
+  ** move as a result of the drop (can happen in auto-vacuum mode).
+  */
+  if( pTab->tabFlags & TF_Autoincrement ){
+    sqlite3NestedParse(pParse,
+      "DELETE FROM %Q.sqlite_sequence WHERE name=%Q",
+      pDb->zName, pTab->zName
+    );
+  }
+#endif
+
+  /* Drop all SQLITE_MASTER table and index entries that refer to the
+  ** table. The program name loops through the master table and deletes
+  ** every row that refers to a table of the same name as the one being
+  ** dropped. Triggers are handled seperately because a trigger can be
+  ** created in the temp database that refers to a table in another
+  ** database.
+  */
+  sqlite3NestedParse(pParse, 
+      "DELETE FROM %Q.%s WHERE tbl_name=%Q and type!='trigger'",
+      pDb->zName, SCHEMA_TABLE(iDb), pTab->zName);
+  if( !isView && !IsVirtual(pTab) ){
+    destroyTable(pParse, pTab);
+  }
+
+  /* Remove the table entry from SQLite's internal schema and modify
+  ** the schema cookie.
+  */
+  if( IsVirtual(pTab) ){
+    sqlite3VdbeAddOp4(v, OP_VDestroy, iDb, 0, 0, pTab->zName, 0);
+  }
+  sqlite3VdbeAddOp4(v, OP_DropTable, iDb, 0, 0, pTab->zName, 0);
+  sqlite3ChangeCookie(pParse, iDb);
+  sqliteViewResetAll(db, iDb);
 }
 
 /*
@@ -2071,7 +2142,8 @@ void sqlite3DropTable(Parse *pParse, SrcList *pName, int isView, int noErr){
     }
   }
 #endif
-  if( sqlite3StrNICmp(pTab->zName, "sqlite_", 7)==0 ){
+  if( sqlite3StrNICmp(pTab->zName, "sqlite_", 7)==0 
+    && sqlite3StrNICmp(pTab->zName, "sqlite_stat", 11)!=0 ){
     sqlite3ErrorMsg(pParse, "table %s may not be dropped", pTab->zName);
     goto exit_drop_table;
   }
@@ -2095,68 +2167,11 @@ void sqlite3DropTable(Parse *pParse, SrcList *pName, int isView, int noErr){
   */
   v = sqlite3GetVdbe(pParse);
   if( v ){
-    Trigger *pTrigger;
-    Db *pDb = &db->aDb[iDb];
     sqlite3BeginWriteOperation(pParse, 1, iDb);
-
-#ifndef SQLITE_OMIT_VIRTUALTABLE
-    if( IsVirtual(pTab) ){
-      sqlite3VdbeAddOp0(v, OP_VBegin);
-    }
-#endif
-    sqlite3FkDropTable(pParse, pName, pTab);
-
-    /* Drop all triggers associated with the table being dropped. Code
-    ** is generated to remove entries from sqlite_master and/or
-    ** sqlite_temp_master if required.
-    */
-    pTrigger = sqlite3TriggerList(pParse, pTab);
-    while( pTrigger ){
-      assert( pTrigger->pSchema==pTab->pSchema || 
-          pTrigger->pSchema==db->aDb[1].pSchema );
-      sqlite3DropTriggerPtr(pParse, pTrigger);
-      pTrigger = pTrigger->pNext;
-    }
-
-#ifndef SQLITE_OMIT_AUTOINCREMENT
-    /* Remove any entries of the sqlite_sequence table associated with
-    ** the table being dropped. This is done before the table is dropped
-    ** at the btree level, in case the sqlite_sequence table needs to
-    ** move as a result of the drop (can happen in auto-vacuum mode).
-    */
-    if( pTab->tabFlags & TF_Autoincrement ){
-      sqlite3NestedParse(pParse,
-        "DELETE FROM %s.sqlite_sequence WHERE name=%Q",
-        pDb->zName, pTab->zName
-      );
-    }
-#endif
-
-    /* Drop all SQLITE_MASTER table and index entries that refer to the
-    ** table. The program name loops through the master table and deletes
-    ** every row that refers to a table of the same name as the one being
-    ** dropped. Triggers are handled seperately because a trigger can be
-    ** created in the temp database that refers to a table in another
-    ** database.
-    */
-    sqlite3NestedParse(pParse, 
-        "DELETE FROM %Q.%s WHERE tbl_name=%Q and type!='trigger'",
-        pDb->zName, SCHEMA_TABLE(iDb), pTab->zName);
     sqlite3ClearStatTables(pParse, iDb, "tbl", pTab->zName);
-    if( !isView && !IsVirtual(pTab) ){
-      destroyTable(pParse, pTab);
-    }
-
-    /* Remove the table entry from SQLite's internal schema and modify
-    ** the schema cookie.
-    */
-    if( IsVirtual(pTab) ){
-      sqlite3VdbeAddOp4(v, OP_VDestroy, iDb, 0, 0, pTab->zName, 0);
-    }
-    sqlite3VdbeAddOp4(v, OP_DropTable, iDb, 0, 0, pTab->zName, 0);
-    sqlite3ChangeCookie(pParse, iDb);
+    sqlite3FkDropTable(pParse, pName, pTab);
+    sqlite3CodeDropTable(pParse, pTab, iDb, isView);
   }
-  sqliteViewResetAll(db, iDb);
 
 exit_drop_table:
   sqlite3SrcListDelete(db, pName);
@@ -2324,13 +2339,15 @@ static void sqlite3RefillIndex(Parse *pParse, Index *pIndex, int memRootPage){
   Table *pTab = pIndex->pTable;  /* The table that is indexed */
   int iTab = pParse->nTab++;     /* Btree cursor used for pTab */
   int iIdx = pParse->nTab++;     /* Btree cursor used for pIndex */
-  int iSorter = iTab;            /* Cursor opened by OpenSorter (if in use) */
+  int iSorter;                   /* Cursor opened by OpenSorter (if in use) */
   int addr1;                     /* Address of top of loop */
   int addr2;                     /* Address to jump to for next iteration */
   int tnum;                      /* Root page of index */
   Vdbe *v;                       /* Generate code into this virtual machine */
   KeyInfo *pKey;                 /* KeyInfo for index */
+#ifdef SQLITE_OMIT_MERGE_SORT
   int regIdxKey;                 /* Registers containing the index key */
+#endif
   int regRecord;                 /* Register holding assemblied index record */
   sqlite3 *db = pParse->db;      /* The database connection */
   int iDb = sqlite3SchemaToIndex(db, pIndex->pSchema);
@@ -2364,17 +2381,18 @@ static void sqlite3RefillIndex(Parse *pParse, Index *pIndex, int memRootPage){
   /* Open the sorter cursor if we are to use one. */
   iSorter = pParse->nTab++;
   sqlite3VdbeAddOp4(v, OP_SorterOpen, iSorter, 0, 0, (char*)pKey, P4_KEYINFO);
+#else
+  iSorter = iTab;
 #endif
 
   /* Open the table. Loop through all rows of the table, inserting index
   ** records into the sorter. */
   sqlite3OpenTable(pParse, iTab, iDb, pTab, OP_OpenRead);
   addr1 = sqlite3VdbeAddOp2(v, OP_Rewind, iTab, 0);
-  addr2 = addr1 + 1;
   regRecord = sqlite3GetTempReg(pParse);
-  regIdxKey = sqlite3GenerateIndexKey(pParse, pIndex, iTab, regRecord, 1);
 
 #ifndef SQLITE_OMIT_MERGE_SORT
+  sqlite3GenerateIndexKey(pParse, pIndex, iTab, regRecord, 1);
   sqlite3VdbeAddOp2(v, OP_SorterInsert, iSorter, regRecord);
   sqlite3VdbeAddOp2(v, OP_Next, iTab, addr1+1);
   sqlite3VdbeJumpHere(v, addr1);
@@ -2394,6 +2412,8 @@ static void sqlite3RefillIndex(Parse *pParse, Index *pIndex, int memRootPage){
   sqlite3VdbeAddOp3(v, OP_IdxInsert, iIdx, regRecord, 1);
   sqlite3VdbeChangeP5(v, OPFLAG_USESEEKRESULT);
 #else
+  regIdxKey = sqlite3GenerateIndexKey(pParse, pIndex, iTab, regRecord, 1);
+  addr2 = addr1 + 1;
   if( pIndex->onError!=OE_None ){
     const int regRowid = regIdxKey + pIndex->nColumn;
     const int j2 = sqlite3VdbeCurrentAddr(v) + 2;
@@ -2491,6 +2511,7 @@ Index *sqlite3CreateIndex(
     assert( pName1 && pName2 );
     iDb = sqlite3TwoPartName(pParse, pName1, pName2, &pName);
     if( iDb<0 ) goto exit_create_index;
+    assert( pName && pName->z );
 
 #ifndef SQLITE_OMIT_TEMPDB
     /* If the index name was unqualified, check if the the table
@@ -2518,6 +2539,7 @@ Index *sqlite3CreateIndex(
     assert( db->aDb[iDb].pSchema==pTab->pSchema );
   }else{
     assert( pName==0 );
+    assert( pStart==0 );
     pTab = pParse->pNewTable;
     if( !pTab ) goto exit_create_index;
     iDb = sqlite3SchemaToIndex(db, pTab->pSchema);
@@ -2560,6 +2582,7 @@ Index *sqlite3CreateIndex(
   if( pName ){
     zName = sqlite3NameFromToken(db, pName);
     if( zName==0 ) goto exit_create_index;
+    assert( pName->z!=0 );
     if( SQLITE_OK!=sqlite3CheckObjectName(pParse, zName) ){
       goto exit_create_index;
     }
@@ -2639,8 +2662,8 @@ Index *sqlite3CreateIndex(
   nCol = pList->nExpr;
   pIndex = sqlite3DbMallocZero(db, 
       sizeof(Index) +              /* Index structure  */
+      sizeof(tRowcnt)*(nCol+1) +   /* Index.aiRowEst   */
       sizeof(int)*nCol +           /* Index.aiColumn   */
-      sizeof(int)*(nCol+1) +       /* Index.aiRowEst   */
       sizeof(char *)*nCol +        /* Index.azColl     */
       sizeof(u8)*nCol +            /* Index.aSortOrder */
       nName + 1 +                  /* Index.zName      */
@@ -2649,10 +2672,10 @@ Index *sqlite3CreateIndex(
   if( db->mallocFailed ){
     goto exit_create_index;
   }
-  pIndex->azColl = (char**)(&pIndex[1]);
+  pIndex->aiRowEst = (tRowcnt*)(&pIndex[1]);
+  pIndex->azColl = (char**)(&pIndex->aiRowEst[nCol+1]);
   pIndex->aiColumn = (int *)(&pIndex->azColl[nCol]);
-  pIndex->aiRowEst = (unsigned *)(&pIndex->aiColumn[nCol]);
-  pIndex->aSortOrder = (u8 *)(&pIndex->aiRowEst[nCol+1]);
+  pIndex->aSortOrder = (u8 *)(&pIndex->aiColumn[nCol]);
   pIndex->zName = (char *)(&pIndex->aSortOrder[nCol]);
   zExtra = (char *)(&pIndex->zName[nName+1]);
   memcpy(pIndex->zName, zName, nName+1);
@@ -2929,9 +2952,9 @@ exit_create_index:
 ** are based on typical values found in actual indices.
 */
 void sqlite3DefaultRowEst(Index *pIdx){
-  unsigned *a = pIdx->aiRowEst;
+  tRowcnt *a = pIdx->aiRowEst;
   int i;
-  unsigned n;
+  tRowcnt n;
   assert( a!=0 );
   a[0] = pIdx->pTable->nRowEst;
   if( a[0]<10 ) a[0] = 10;
@@ -3415,13 +3438,10 @@ void sqlite3BeginTransaction(Parse *pParse, int type){
 ** Commit a transaction
 */
 void sqlite3CommitTransaction(Parse *pParse){
-  sqlite3 *db;
   Vdbe *v;
 
   assert( pParse!=0 );
-  db = pParse->db;
-  assert( db!=0 );
-/*  if( db->aDb[0].pBt==0 ) return; */
+  assert( pParse->db!=0 );
   if( sqlite3AuthCheck(pParse, SQLITE_TRANSACTION, "COMMIT", 0, 0) ){
     return;
   }
@@ -3435,13 +3455,10 @@ void sqlite3CommitTransaction(Parse *pParse){
 ** Rollback a transaction
 */
 void sqlite3RollbackTransaction(Parse *pParse){
-  sqlite3 *db;
   Vdbe *v;
 
   assert( pParse!=0 );
-  db = pParse->db;
-  assert( db!=0 );
-/*  if( db->aDb[0].pBt==0 ) return; */
+  assert( pParse->db!=0 );
   if( sqlite3AuthCheck(pParse, SQLITE_TRANSACTION, "ROLLBACK", 0, 0) ){
     return;
   }
