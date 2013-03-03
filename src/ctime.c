@@ -144,6 +144,9 @@ static const char * const azCompileOpt[] = {
 #ifdef SQLITE_LOCK_TRACE
   "LOCK_TRACE",
 #endif
+#ifdef SQLITE_MAX_SCHEMA_RETRY
+  "MAX_SCHEMA_RETRY=" CTIMEOPT_VAL(SQLITE_MAX_SCHEMA_RETRY),
+#endif
 #ifdef SQLITE_MEMDEBUG
   "MEMDEBUG",
 #endif
@@ -257,6 +260,9 @@ static const char * const azCompileOpt[] = {
 #ifdef SQLITE_OMIT_MEMORYDB
   "OMIT_MEMORYDB",
 #endif
+#ifdef SQLITE_OMIT_MERGE_SORT
+  "OMIT_MERGE_SORT",
+#endif
 #ifdef SQLITE_OMIT_OR_OPTIMIZATION
   "OMIT_OR_OPTIMIZATION",
 #endif
@@ -322,6 +328,9 @@ static const char * const azCompileOpt[] = {
 #endif
 #ifdef SQLITE_OMIT_XFER_OPT
   "OMIT_XFER_OPT",
+#endif
+#ifdef SQLITE_PAGECACHE_BLOCKALLOC
+  "PAGECACHE_BLOCKALLOC",
 #endif
 #ifdef SQLITE_PERFORMANCE_TRACE
   "PERFORMANCE_TRACE",

@@ -3739,6 +3739,7 @@ static int pagerSyncHotJournal(Pager *pPager){
 int sqlite3PagerClose(Pager *pPager){
   u8 *pTmp = (u8 *)pPager->pTmpSpace;
 
+  assert( assert_pager_state(pPager) );
   disable_simulated_io_errors();
   sqlite3BeginBenignMalloc();
   /* pPager->errCode = 0; */

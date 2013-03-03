@@ -363,6 +363,12 @@ Tcl_SetVar2(interp, "sqlite_options", "long_double",
   Tcl_SetVar2(interp, "sqlite_options", "memorymanage", "0", TCL_GLOBAL_ONLY);
 #endif
 
+#ifdef SQLITE_OMIT_MERGE_SORT
+  Tcl_SetVar2(interp, "sqlite_options", "mergesort", "0", TCL_GLOBAL_ONLY);
+#else
+  Tcl_SetVar2(interp, "sqlite_options", "mergesort", "1", TCL_GLOBAL_ONLY);
+#endif
+
 #ifdef SQLITE_OMIT_OR_OPTIMIZATION
   Tcl_SetVar2(interp, "sqlite_options", "or_opt", "0", TCL_GLOBAL_ONLY);
 #else
@@ -549,6 +555,12 @@ Tcl_SetVar2(interp, "sqlite_options", "long_double",
   Tcl_SetVar2(interp, "sqlite_options", "yytrackmaxstackdepth", "0", TCL_GLOBAL_ONLY);
 #endif
 
+#ifdef SQLITE_PAGECACHE_BLOCKALLOC
+  Tcl_SetVar2(interp, "sqlite_options", "blockalloc", "1", TCL_GLOBAL_ONLY);
+#else
+  Tcl_SetVar2(interp, "sqlite_options", "blockalloc", "0", TCL_GLOBAL_ONLY);
+#endif
+
 #define LINKVAR(x) { \
     static const int cv_ ## x = SQLITE_ ## x; \
     Tcl_LinkVar(interp, "SQLITE_" #x, (char *)&(cv_ ## x), \
@@ -571,6 +583,7 @@ Tcl_SetVar2(interp, "sqlite_options", "long_double",
   LINKVAR( DEFAULT_PAGE_SIZE );
   LINKVAR( DEFAULT_FILE_FORMAT );
   LINKVAR( MAX_ATTACHED );
+  LINKVAR( MAX_DEFAULT_PAGE_SIZE );
 
   {
     static const int cv_TEMP_STORE = SQLITE_TEMP_STORE;

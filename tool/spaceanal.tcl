@@ -4,11 +4,14 @@
 #
 
 if {[catch {
+if {![info exists argv0]} {
+  set argv0 [file rootname [file tail [info nameofexecutable]]]
+}
 
 # Get the name of the database to analyze
 #
 #set argv $argv0
-if {[llength $argv]!=1} {
+if {![info exists argv] || [llength $argv]!=1} {
   puts stderr "Usage: $argv0 database-name"
   exit 1
 }
@@ -28,12 +31,12 @@ if {[file size $file_to_analyze]<512} {
 
 # Open the database
 #
-sqlite3 db [lindex $argv 0]
+sqlite3 db $file_to_analyze
 register_dbstat_vtab db
 
 set pageSize [db one {PRAGMA page_size}]
 
-#set DB [btree_open [lindex $argv 0] 1000 0]
+#set DB [btree_open $file_to_analyze 1000 0]
 
 # In-memory database for collecting statistics. This script loops through
 # the tables and indices in the database being analyzed, adding a row for each
@@ -41,8 +44,7 @@ set pageSize [db one {PRAGMA page_size}]
 # queries the in-memory db to produce the space-analysis report.
 #
 sqlite3 mem :memory:
-set tabledef\
-{CREATE TABLE space_used(
+set tabledef {CREATE TABLE space_used(
    name clob,        -- Name of a table or index in the database file
    tblname clob,     -- Name of associated table
    is_index boolean, -- TRUE if it is an index, false for a table
@@ -293,16 +295,16 @@ proc subreport {title where} {
   statline {Overflow pages used} $ovfl_pages
   statline {Total pages used} $total_pages
   if {$int_unused>0} {
-    set int_unused_percent \
-         [percent $int_unused [expr {$int_pages*$pageSize}] {of index space}]
+    set int_unused_percent [
+         percent $int_unused [expr {$int_pages*$pageSize}] {of index space}]
     statline "Unused bytes on index pages" $int_unused $int_unused_percent
   }
-  statline "Unused bytes on primary pages" $leaf_unused \
-     [percent $leaf_unused [expr {$leaf_pages*$pageSize}] {of primary space}]
-  statline "Unused bytes on overflow pages" $ovfl_unused \
-     [percent $ovfl_unused [expr {$ovfl_pages*$pageSize}] {of overflow space}]
-  statline "Unused bytes on all pages" $total_unused \
-               [percent $total_unused $storage {of all space}]
+  statline "Unused bytes on primary pages" $leaf_unused [
+     percent $leaf_unused [expr {$leaf_pages*$pageSize}] {of primary space}]
+  statline "Unused bytes on overflow pages" $ovfl_unused [
+     percent $ovfl_unused [expr {$ovfl_pages*$pageSize}] {of overflow space}]
+  statline "Unused bytes on all pages" $total_unused [
+               percent $total_unused $storage {of all space}]
   return 1
 }
 
@@ -452,11 +454,9 @@ Page size in bytes
 
 Number of pages in the whole file
 }
-puts \
-"    The number of $pageSize-byte pages that go into forming the complete
+puts "    The number of $pageSize-byte pages that go into forming the complete
     database"
-puts \
-{
+puts {
 Pages that store data
 
     The number of pages that store data, either as primary B*Tree pages or
