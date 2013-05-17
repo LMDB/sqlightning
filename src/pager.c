@@ -16,8 +16,8 @@ sqlite3_file *sqlite3PagerFile(Pager *pPager){
 /*
 ** Return the full pathname of the database file.
 */
-const char *sqlite3PagerFilename(Pager *pPager){
-  return "/dev/null";
+const char *sqlite3PagerFilename(Pager *pPager, int nullIfMemDb){
+  return "";
 }
 
 /*
@@ -137,6 +137,16 @@ int sqlite3PagerExclusiveLock(Pager *pPager){
 */
 int sqlite3PagerIsMemdb(Pager *pPager){
   return 0;
+}
+
+void sqlite3PagerShrink(Pager *pPager) {
+}
+
+u8 sqlite3PagerIsreadonly(Pager *pPager) {
+  return 0;
+}
+
+void sqlite3PagerCacheStat(Pager *pPager, int eStat, int reset, int *pnVal) {
 }
 
 #ifdef SQLITE_TEST

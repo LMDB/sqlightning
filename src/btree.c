@@ -1033,9 +1033,9 @@ int sqlite3BtreeInsert(
   int seekResult                 /* Result of prior MovetoUnpacked() call */
 ){
   MDB_cursor *mc = (MDB_cursor *)(pCur+1);
-  UnpackedRecord *p = NULL;
+  UnpackedRecord *p;
   MDB_val key[2], data;
-  char aSpace[150];
+  char aSpace[150], *pFree = 0;
   int rc, res, flag;
 
   if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
@@ -1045,17 +1045,21 @@ int sqlite3BtreeInsert(
 	data.mv_size = nData + nZero;
 	flag = 0;
   } else {
+	p = sqlite3VdbeAllocUnpackedRecord(
+		pCur->pKeyInfo, aSpace, sizeof(aSpace), &pFree);
+	if (!p)
+		return SQLITE_NOMEM;
     key[0].mv_size = nKey;
 	key[0].mv_data = (void *)pKey;
 	splitIndexKey(key, &data);
-	p = sqlite3VdbeRecordUnpack(pCur->pKeyInfo,
-	  (int)nKey, pKey, aSpace, sizeof(aSpace));
+	sqlite3VdbeRecordUnpack(pCur->pKeyInfo,
+	  (int)nKey, pKey, p);
 	key[1].mv_data = p;
 	flag = MDB_NODUPDATA;
   }
   rc = mdb_cursor_put(mc, key, &data, flag);
-  if (p)
-    sqlite3VdbeDeleteUnpackedRecord(p);
+  if (pFree)
+    sqlite3DbFree(pCur->pKeyInfo->db, pFree);
   else if (nZero && rc == 0) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
 	mdb_node_read(mc->mc_txn, node, &data);
@@ -1503,7 +1507,7 @@ int sqlite3BtreePrevious(BtCursor *pCur, int *pRes){
 ** that was open at the beginning of this operation will result
 ** in an error.
 */
-int sqlite3BtreeRollback(Btree *p){
+int sqlite3BtreeRollback(Btree *p, int tripCode){
   LOG("done",0);
   return sqlite3BtreeSavepoint(p, SAVEPOINT_ROLLBACK, -1);
 }
@@ -1704,6 +1708,10 @@ int sqlite3BtreeSetSafetyLevel(
 int sqlite3BtreeSetVersion(Btree *pBtree, int iVersion){
   LOG("done",0);
   return SQLITE_OK;
+}
+
+void sqlite3BtreeCursorHints(BtCursor *pCsr, unsigned int mask) {
+	/* could use BTREE_BULKLOAD */
 }
 
 /*

@@ -14,7 +14,8 @@
 #### The toplevel directory of the source tree.  This is the directory
 #    that contains this "Makefile.in" and the "configure.in" script.
 #
-TOP = /home/software/sqlite-src-3070701
+#TOP = /home/software/sqlite-src-3070701
+TOP = /home/software/sqlite3.git
 
 #### C Compiler and options for use in building executables that
 #    will run on the platform that is doing the build.
