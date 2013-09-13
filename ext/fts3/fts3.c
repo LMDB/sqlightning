@@ -2975,14 +2975,12 @@ static int fts3FilterMethod(
     pCsr->iLangid = 0;
     if( nVal==2 ) pCsr->iLangid = sqlite3_value_int(apVal[1]);
 
+    assert( p->base.zErrMsg==0 );
     rc = sqlite3Fts3ExprParse(p->pTokenizer, pCsr->iLangid,
-        p->azColumn, p->bFts4, p->nColumn, iCol, zQuery, -1, &pCsr->pExpr
+        p->azColumn, p->bFts4, p->nColumn, iCol, zQuery, -1, &pCsr->pExpr, 
+        &p->base.zErrMsg
     );
     if( rc!=SQLITE_OK ){
-      if( rc==SQLITE_ERROR ){
-        static const char *zErr = "malformed MATCH expression: [%s]";
-        p->base.zErrMsg = sqlite3_mprintf(zErr, zQuery);
-      }
       return rc;
     }
 
@@ -3646,8 +3644,12 @@ int sqlite3Fts3Init(sqlite3 *db){
           db, "fts4", &fts3Module, (void *)pHash, 0
       );
     }
+    if( rc==SQLITE_OK ){
+      rc = sqlite3Fts3InitTok(db, (void *)pHash);
+    }
     return rc;
   }
+
 
   /* An error has occurred. Delete the hash table and return the error code. */
   assert( rc!=SQLITE_OK );

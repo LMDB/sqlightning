@@ -116,12 +116,7 @@ CollSeq *sqlite3ExprCollSeq(Parse *pParse, Expr *pExpr){
     }
     assert( op!=TK_REGISTER || p->op2!=TK_COLLATE );
     if( op==TK_COLLATE ){
-      if( db->init.busy ){
-        /* Do not report errors when parsing while the schema */
-        pColl = sqlite3FindCollSeq(db, ENC(db), p->u.zToken, 0);
-      }else{
-        pColl = sqlite3GetCollSeq(pParse, ENC(db), 0, p->u.zToken);
-      }
+      pColl = sqlite3GetCollSeq(pParse, ENC(db), 0, p->u.zToken);
       break;
     }
     if( p->pTab!=0
@@ -1214,6 +1209,7 @@ static int selectNodeIsConstant(Walker *pWalker, Select *NotUsed){
 }
 static int exprIsConst(Expr *p, int initFlag){
   Walker w;
+  memset(&w, 0, sizeof(w));
   w.u.i = initFlag;
   w.xExprCallback = exprNodeIsConstant;
   w.xSelectCallback = selectNodeIsConstant;
@@ -3428,8 +3424,8 @@ void sqlite3ExprCodeConstants(Parse *pParse, Expr *pExpr){
   Walker w;
   if( pParse->cookieGoto ) return;
   if( OptimizationDisabled(pParse->db, SQLITE_FactorOutConst) ) return;
+  memset(&w, 0, sizeof(w));
   w.xExprCallback = evalConstExpr;
-  w.xSelectCallback = 0;
   w.pParse = pParse;
   sqlite3WalkExpr(&w, pExpr);
 }
