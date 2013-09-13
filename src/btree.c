@@ -1228,10 +1228,6 @@ int sqlite3BtreeLockTable(Btree *p, int iTab, u8 isWriteLock){
 ** pointing.  The meaning of the integer written into
 ** *pRes is as follows:
 **
-**     *pRes<0      The cursor is left pointing at an entry that
-**                  is smaller than intKey/pUnKey or if the table is empty
-**                  and the cursor is therefore left point to nothing.
-**
 **     *pRes==0     The cursor is left pointing at an entry that
 **                  exactly matches intKey/pUnKey.
 **
