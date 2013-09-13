@@ -988,7 +988,7 @@ static const char *winNextSystemCall(sqlite3_vfs *p, const char *zName){
 ** (if available).
 */
 
-void sqlite3_win32_write_debug(char *zBuf, int nBuf){
+void sqlite3_win32_write_debug(const char *zBuf, int nBuf){
   char zDbgBuf[SQLITE_WIN32_DBG_BUF_SIZE];
   int nMin = MIN(nBuf, (SQLITE_WIN32_DBG_BUF_SIZE - 1)); /* may be negative. */
   if( nMin<-1 ) nMin = -1; /* all negative values become -1. */
@@ -1621,9 +1621,10 @@ static void logIoerr(int nRetry){
 /*************************************************************************
 ** This section contains code for WinCE only.
 */
+#if !defined(SQLITE_MSVC_LOCALTIME_API) || !SQLITE_MSVC_LOCALTIME_API
 /*
-** Windows CE does not have a localtime() function.  So create a
-** substitute.
+** The MSVC CRT on Windows CE may not have a localtime() function.  So
+** create a substitute.
 */
 #include <time.h>
 struct tm *__cdecl localtime(const time_t *t)
@@ -1647,6 +1648,7 @@ struct tm *__cdecl localtime(const time_t *t)
   y.tm_sec = pTm.wSecond;
   return &y;
 }
+#endif
 
 #define HANDLE_TO_WINFILE(a) (winFile*)&((char*)a)[-(int)offsetof(winFile,h)]
 
@@ -1668,15 +1670,17 @@ static void winceMutexAcquire(HANDLE h){
 ** Create the mutex and shared memory used for locking in the file
 ** descriptor pFile
 */
-static BOOL winceCreateLock(const char *zFilename, winFile *pFile){
+static int winceCreateLock(const char *zFilename, winFile *pFile){
   LPWSTR zTok;
   LPWSTR zName;
+  DWORD lastErrno;
+  BOOL bLogged = FALSE;
   BOOL bInit = TRUE;
 
   zName = utf8ToUnicode(zFilename);
   if( zName==0 ){
     /* out of memory */
-    return FALSE;
+    return SQLITE_IOERR_NOMEM;
   }
 
   /* Initialize the local lockdata */
@@ -1693,9 +1697,10 @@ static BOOL winceCreateLock(const char *zFilename, winFile *pFile){
   pFile->hMutex = osCreateMutexW(NULL, FALSE, zName);
   if (!pFile->hMutex){
     pFile->lastErrno = osGetLastError();
-    winLogError(SQLITE_ERROR, pFile->lastErrno, "winceCreateLock1", zFilename);
+    winLogError(SQLITE_IOERR, pFile->lastErrno,
+                "winceCreateLock1", zFilename);
     sqlite3_free(zName);
-    return FALSE;
+    return SQLITE_IOERR;
   }
 
   /* Acquire the mutex before continuing */
@@ -1712,41 +1717,49 @@ static BOOL winceCreateLock(const char *zFilename, winFile *pFile){
 
   /* Set a flag that indicates we're the first to create the memory so it 
   ** must be zero-initialized */
-  if (osGetLastError() == ERROR_ALREADY_EXISTS){
+  lastErrno = osGetLastError();
+  if (lastErrno == ERROR_ALREADY_EXISTS){
     bInit = FALSE;
   }
 
   sqlite3_free(zName);
 
   /* If we succeeded in making the shared memory handle, map it. */
-  if (pFile->hShared){
+  if( pFile->hShared ){
     pFile->shared = (winceLock*)osMapViewOfFile(pFile->hShared, 
              FILE_MAP_READ|FILE_MAP_WRITE, 0, 0, sizeof(winceLock));
     /* If mapping failed, close the shared memory handle and erase it */
-    if (!pFile->shared){
+    if( !pFile->shared ){
       pFile->lastErrno = osGetLastError();
-      winLogError(SQLITE_ERROR, pFile->lastErrno,
-               "winceCreateLock2", zFilename);
+      winLogError(SQLITE_IOERR, pFile->lastErrno,
+                  "winceCreateLock2", zFilename);
+      bLogged = TRUE;
       osCloseHandle(pFile->hShared);
       pFile->hShared = NULL;
     }
   }
 
   /* If shared memory could not be created, then close the mutex and fail */
-  if (pFile->hShared == NULL){
+  if( pFile->hShared==NULL ){
+    if( !bLogged ){
+      pFile->lastErrno = lastErrno;
+      winLogError(SQLITE_IOERR, pFile->lastErrno,
+                  "winceCreateLock3", zFilename);
+      bLogged = TRUE;
+    }
     winceMutexRelease(pFile->hMutex);
     osCloseHandle(pFile->hMutex);
     pFile->hMutex = NULL;
-    return FALSE;
+    return SQLITE_IOERR;
   }
   
   /* Initialize the shared memory if we're supposed to */
-  if (bInit) {
+  if( bInit ){
     memset(pFile->shared, 0, sizeof(winceLock));
   }
 
   winceMutexRelease(pFile->hMutex);
-  return TRUE;
+  return SQLITE_OK;
 }
 
 /*
@@ -1825,7 +1838,8 @@ static BOOL winceLockFile(
   }
 
   /* Want a pending lock? */
-  else if (dwFileOffsetLow == (DWORD)PENDING_BYTE && nNumberOfBytesToLockLow == 1){
+  else if (dwFileOffsetLow == (DWORD)PENDING_BYTE
+           && nNumberOfBytesToLockLow == 1){
     /* If no pending lock has been acquired, then acquire it */
     if (pFile->shared->bPending == 0) {
       pFile->shared->bPending = TRUE;
@@ -1835,7 +1849,8 @@ static BOOL winceLockFile(
   }
 
   /* Want a reserved lock? */
-  else if (dwFileOffsetLow == (DWORD)RESERVED_BYTE && nNumberOfBytesToLockLow == 1){
+  else if (dwFileOffsetLow == (DWORD)RESERVED_BYTE
+           && nNumberOfBytesToLockLow == 1){
     if (pFile->shared->bReserved == 0) {
       pFile->shared->bReserved = TRUE;
       pFile->local.bReserved = TRUE;
@@ -1878,7 +1893,8 @@ static BOOL winceUnlockFile(
 
     /* Did we just have a reader lock? */
     else if (pFile->local.nReaders){
-      assert(nNumberOfBytesToUnlockLow == (DWORD)SHARED_SIZE || nNumberOfBytesToUnlockLow == 1);
+      assert(nNumberOfBytesToUnlockLow == (DWORD)SHARED_SIZE
+             || nNumberOfBytesToUnlockLow == 1);
       pFile->local.nReaders --;
       if (pFile->local.nReaders == 0)
       {
@@ -1889,7 +1905,8 @@ static BOOL winceUnlockFile(
   }
 
   /* Releasing a pending lock */
-  else if (dwFileOffsetLow == (DWORD)PENDING_BYTE && nNumberOfBytesToUnlockLow == 1){
+  else if (dwFileOffsetLow == (DWORD)PENDING_BYTE
+           && nNumberOfBytesToUnlockLow == 1){
     if (pFile->local.bPending){
       pFile->local.bPending = FALSE;
       pFile->shared->bPending = FALSE;
@@ -1897,7 +1914,8 @@ static BOOL winceUnlockFile(
     }
   }
   /* Releasing a reserved lock */
-  else if (dwFileOffsetLow == (DWORD)RESERVED_BYTE && nNumberOfBytesToUnlockLow == 1){
+  else if (dwFileOffsetLow == (DWORD)RESERVED_BYTE
+           && nNumberOfBytesToUnlockLow == 1){
     if (pFile->local.bReserved) {
       pFile->local.bReserved = FALSE;
       pFile->shared->bReserved = FALSE;
@@ -2063,6 +2081,7 @@ static int winClose(sqlite3_file *id){
   assert( pFile->pShm==0 );
 #endif
   OSTRACE(("CLOSE %d\n", pFile->h));
+  assert( pFile->h!=NULL && pFile->h!=INVALID_HANDLE_VALUE );
   do{
     rc = osCloseHandle(pFile->h);
     /* SimulateIOError( rc=0; cnt=MX_CLOSE_ATTEMPT; ); */
@@ -2755,7 +2774,7 @@ static int winFileControl(sqlite3_file *id, int op, void *pArg){
       return SQLITE_OK;
     }
     case SQLITE_FCNTL_TEMPFILENAME: {
-      char *zTFile = sqlite3_malloc( pFile->pVfs->mxPathname );
+      char *zTFile = sqlite3MallocZero( pFile->pVfs->mxPathname );
       if( zTFile ){
         getTempname(pFile->pVfs->mxPathname, zTFile);
         *(char**)pArg = zTFile;
@@ -2979,7 +2998,7 @@ static void winShmPurge(sqlite3_vfs *pVfs, int deleteFlag){
                  (int)osGetCurrentProcessId(), i,
                  bRc ? "ok" : "failed"));
       }
-      if( p->hFile.h != INVALID_HANDLE_VALUE ){
+      if( p->hFile.h!=NULL && p->hFile.h!=INVALID_HANDLE_VALUE ){
         SimulateIOErrorBenign(1);
         winClose((sqlite3_file *)&p->hFile);
         SimulateIOErrorBenign(0);
@@ -3059,7 +3078,7 @@ static int winOpenSharedMemory(winFile *pDbFd){
     rc = winOpen(pDbFd->pVfs,
                  pShmNode->zFilename,             /* Name of the file (UTF-8) */
                  (sqlite3_file*)&pShmNode->hFile,  /* File handle here */
-                 SQLITE_OPEN_WAL | SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, /* Mode flags */
+                 SQLITE_OPEN_WAL | SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
                  0);
     if( SQLITE_OK!=rc ){
       goto shm_open_err;
@@ -3674,8 +3693,9 @@ static int winOpen(
        || eType==SQLITE_OPEN_TRANSIENT_DB || eType==SQLITE_OPEN_WAL
   );
 
-  assert( id!=0 );
-  UNUSED_PARAMETER(pVfs);
+  assert( pFile!=0 );
+  memset(pFile, 0, sizeof(winFile));
+  pFile->h = INVALID_HANDLE_VALUE;
 
 #if SQLITE_OS_WINRT
   if( !sqlite3_temp_directory ){
@@ -3684,13 +3704,12 @@ static int winOpen(
   }
 #endif
 
-  pFile->h = INVALID_HANDLE_VALUE;
-
   /* If the second argument to this function is NULL, generate a 
   ** temporary file name to use 
   */
   if( !zUtf8Name ){
     assert(isDelete && !isOpenJournal);
+    memset(zTmpname, 0, MAX_PATH+2);
     rc = getTempname(MAX_PATH+2, zTmpname);
     if( rc!=SQLITE_OK ){
       return rc;
@@ -3813,7 +3832,9 @@ static int winOpen(
     sqlite3_free(zConverted);
     if( isReadWrite && !isExclusive ){
       return winOpen(pVfs, zName, id, 
-             ((flags|SQLITE_OPEN_READONLY)&~(SQLITE_OPEN_CREATE|SQLITE_OPEN_READWRITE)), pOutFlags);
+         ((flags|SQLITE_OPEN_READONLY) &
+                     ~(SQLITE_OPEN_CREATE|SQLITE_OPEN_READWRITE)),
+         pOutFlags);
     }else{
       return SQLITE_CANTOPEN_BKPT;
     }
@@ -3827,26 +3848,13 @@ static int winOpen(
     }
   }
 
-  memset(pFile, 0, sizeof(*pFile));
-  pFile->pMethod = &winIoMethod;
-  pFile->h = h;
-  pFile->lastErrno = NO_ERROR;
-  pFile->pVfs = pVfs;
-#ifndef SQLITE_OMIT_WAL
-  pFile->pShm = 0;
-#endif
-  pFile->zPath = zName;
-  if( sqlite3_uri_boolean(zName, "psow", SQLITE_POWERSAFE_OVERWRITE) ){
-    pFile->ctrlFlags |= WINFILE_PSOW;
-  }
-
 #if SQLITE_OS_WINCE
   if( isReadWrite && eType==SQLITE_OPEN_MAIN_DB
-       && !winceCreateLock(zName, pFile)
+       && (rc = winceCreateLock(zName, pFile))!=SQLITE_OK
   ){
     osCloseHandle(h);
     sqlite3_free(zConverted);
-    return SQLITE_CANTOPEN_BKPT;
+    return rc;
   }
   if( isTemp ){
     pFile->zDeleteOnClose = zConverted;
@@ -3855,6 +3863,15 @@ static int winOpen(
   {
     sqlite3_free(zConverted);
   }
+
+  pFile->pMethod = &winIoMethod;
+  pFile->pVfs = pVfs;
+  pFile->h = h;
+  if( sqlite3_uri_boolean(zName, "psow", SQLITE_POWERSAFE_OVERWRITE) ){
+    pFile->ctrlFlags |= WINFILE_PSOW;
+  }
+  pFile->lastErrno = NO_ERROR;
+  pFile->zPath = zName;
 
   OpenCounter(+1);
   return rc;
@@ -3900,7 +3917,8 @@ static int winDelete(
         attr = sAttrData.dwFileAttributes;
       }else{
         lastErrno = osGetLastError();
-        if( lastErrno==ERROR_FILE_NOT_FOUND || lastErrno==ERROR_PATH_NOT_FOUND ){
+        if( lastErrno==ERROR_FILE_NOT_FOUND
+         || lastErrno==ERROR_PATH_NOT_FOUND ){
           rc = SQLITE_IOERR_DELETE_NOENT; /* Already gone? */
         }else{
           rc = SQLITE_ERROR;
@@ -3912,7 +3930,8 @@ static int winDelete(
 #endif
       if ( attr==INVALID_FILE_ATTRIBUTES ){
         lastErrno = osGetLastError();
-        if( lastErrno==ERROR_FILE_NOT_FOUND || lastErrno==ERROR_PATH_NOT_FOUND ){
+        if( lastErrno==ERROR_FILE_NOT_FOUND
+         || lastErrno==ERROR_PATH_NOT_FOUND ){
           rc = SQLITE_IOERR_DELETE_NOENT; /* Already gone? */
         }else{
           rc = SQLITE_ERROR;
@@ -3939,7 +3958,8 @@ static int winDelete(
       attr = osGetFileAttributesA(zConverted);
       if ( attr==INVALID_FILE_ATTRIBUTES ){
         lastErrno = osGetLastError();
-        if( lastErrno==ERROR_FILE_NOT_FOUND || lastErrno==ERROR_PATH_NOT_FOUND ){
+        if( lastErrno==ERROR_FILE_NOT_FOUND
+         || lastErrno==ERROR_PATH_NOT_FOUND ){
           rc = SQLITE_IOERR_DELETE_NOENT; /* Already gone? */
         }else{
           rc = SQLITE_ERROR;
@@ -4107,16 +4127,12 @@ static int winFullPathname(
     */
     char zOut[MAX_PATH+1];
     memset(zOut, 0, MAX_PATH+1);
-    cygwin_conv_to_win32_path(zRelative, zOut); /* POSIX to Win32 */
+    cygwin_conv_path(CCP_POSIX_TO_WIN_A|CCP_RELATIVE, zRelative, zOut,
+                     MAX_PATH+1);
     sqlite3_snprintf(MIN(nFull, pVfs->mxPathname), zFull, "%s\\%s",
                      sqlite3_data_directory, zOut);
   }else{
-    /*
-    ** NOTE: The Cygwin docs state that the maximum length needed
-    **       for the buffer passed to cygwin_conv_to_full_win32_path
-    **       is MAX_PATH.
-    */
-    cygwin_conv_to_full_win32_path(zRelative, zFull);
+    cygwin_conv_path(CCP_POSIX_TO_WIN_A, zRelative, zFull, nFull);
   }
   return SQLITE_OK;
 #endif
@@ -4274,9 +4290,9 @@ static void winDlError(sqlite3_vfs *pVfs, int nBuf, char *zBufOut){
   UNUSED_PARAMETER(pVfs);
   getLastErrorMsg(osGetLastError(), nBuf, zBufOut);
 }
-static void (*winDlSym(sqlite3_vfs *pVfs, void *pHandle, const char *zSymbol))(void){
+static void (*winDlSym(sqlite3_vfs *pVfs,void *pH,const char *zSym))(void){
   UNUSED_PARAMETER(pVfs);
-  return (void(*)(void))osGetProcAddressA((HANDLE)pHandle, zSymbol);
+  return (void(*)(void))osGetProcAddressA((HANDLE)pH, zSym);
 }
 static void winDlClose(sqlite3_vfs *pVfs, void *pHandle){
   UNUSED_PARAMETER(pVfs);
@@ -4374,7 +4390,8 @@ static int winCurrentTimeInt64(sqlite3_vfs *pVfs, sqlite3_int64 *piNow){
 #endif
   /* 2^32 - to avoid use of LL and warnings in gcc */
   static const sqlite3_int64 max32BitValue = 
-      (sqlite3_int64)2000000000 + (sqlite3_int64)2000000000 + (sqlite3_int64)294967296;
+      (sqlite3_int64)2000000000 + (sqlite3_int64)2000000000 +
+      (sqlite3_int64)294967296;
 
 #if SQLITE_OS_WINCE
   SYSTEMTIME time;
