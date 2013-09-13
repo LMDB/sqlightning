@@ -631,7 +631,7 @@ void sqlite3BtreeCursorZero(BtCursor *p){
   p->index.mv_data = NULL;
   p->index.mv_size = 0;
   mc->mc_next = 0;
-  mc->mc_orig = 0;
+  mc->mc_backup = 0;
   mc->mc_xcursor = 0;
   mc->mc_txn = 0;
   mc->mc_dbi = 0;
