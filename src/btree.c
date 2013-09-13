@@ -246,13 +246,17 @@ void sqlite3BtreeClearCursor(BtCursor *pCur){
 
 static int BtreeTableHandle(Btree *p, int iTable, MDB_dbi *dbi)
 {
-  char name[13];
+  char name[13], *nptr;
   int rc;
 
-  if (!p->curr_txn->mt_dbs[MAIN_DBI].md_entries)
-	return SQLITE_EMPTY;
-  sprintf(name, "Tab.%08x", iTable);
-  rc = mdb_open(p->curr_txn, name, 0, dbi);
+  if (iTable == 1 && !p->curr_txn->mt_dbs[MAIN_DBI].md_entries) {
+	iTable = 0;
+	nptr = NULL;
+  } else {
+	nptr = name;
+	sprintf(name, "Tab.%08x", iTable);
+  }
+  rc = mdb_open(p->curr_txn, nptr, 0, dbi);
   return errmap(rc);
 }
 
@@ -1612,6 +1616,14 @@ int sqlite3BtreeSchemaLocked(Btree *p){
 */
 int sqlite3BtreeSetCacheSize(Btree *p, int mxPage){
   LOG("done",0);
+  return SQLITE_OK;
+}
+
+/*
+** Change the limit on the amount of the database file that may be
+** memory mapped.
+*/
+int sqlite3BtreeSetMmapLimit(Btree *p, sqlite3_int64 szMmap){
   return SQLITE_OK;
 }
 
