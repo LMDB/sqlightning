@@ -364,6 +364,7 @@ int sqlite3BtreeCloseCursor(BtCursor *pCur){
 	while (*prev != pCur) prev = &((*prev)->pNext);
 	*prev = pCur->pNext;
   }
+  sqlite3_free(pCur->index.mv_data);
   sqlite3BtreeClearCursor(pCur);
   LOG("done",0);
   return SQLITE_OK;
@@ -521,7 +522,7 @@ int sqlite3BtreeCreateTable(Btree *p, int *piTable, int flags){
   if (flags & BTREE_INTKEY) {
     mflags = MDB_INTEGERKEY;
   } else {
-    mflags = MDB_DUPSORT|MDB_DUPFIXED|MDB_INTEGERDUP;
+    mflags = MDB_DUPSORT;
   }
   if (!(p->main_txn->mt_flags & MDB_TXN_RDONLY))
     mflags |= MDB_CREATE;
@@ -1295,7 +1296,15 @@ int sqlite3BtreeMovetoUnpacked(
 	else
 	  res = 1;
   } else {
-    res = 0;
+    if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
+      res = 0;
+	} else {
+	  /* an index lookup, we need to check for exact match */
+	  int len;
+	  const char *pkey = sqlite3BtreeKeyFetch(pCur, &len);
+	  if (pkey)
+        res = sqlite3VdbeRecordCompare(len, pkey, pUnKey);
+	}
   }
   if (ret == MDB_NOTFOUND)
     ret = 0;
