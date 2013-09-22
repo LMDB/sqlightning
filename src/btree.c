@@ -244,6 +244,12 @@ void sqlite3BtreeClearCursor(BtCursor *pCur){
   LOG("done",0);
 }
 
+static int BtreeCompare(const MDB_val *a, const MDB_val *b)
+{
+  UnpackedRecord *p = a[1].mv_data;
+  return -sqlite3VdbeRecordCompare(b->mv_size, b->mv_data, p);
+}
+
 static int BtreeTableHandle(Btree *p, int iTable, MDB_dbi *dbi)
 {
   char name[13], *nptr;
@@ -257,6 +263,9 @@ static int BtreeTableHandle(Btree *p, int iTable, MDB_dbi *dbi)
 	sprintf(name, "Tab.%08x", iTable);
   }
   rc = mdb_open(p->curr_txn, nptr, 0, dbi);
+  if (!rc && (p->curr_txn->mt_dbs[*dbi].md_flags & MDB_DUPSORT)) {
+	  mdb_set_compare(p->curr_txn, *dbi, BtreeCompare);
+  }
   return errmap(rc);
 }
 
@@ -475,12 +484,6 @@ int sqlite3BtreeCount(BtCursor *pCur, i64 *pnEntry){
   return SQLITE_OK;
 }
 #endif
-
-static int BtreeCompare(const MDB_val *a, const MDB_val *b)
-{
-  UnpackedRecord *p = a[1].mv_data;
-  return -sqlite3VdbeRecordCompare(b->mv_size, b->mv_data, p);
-}
 
 /*
 ** Create a new BTree table.  Write into *piTable the page
