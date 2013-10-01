@@ -1204,7 +1204,7 @@ int sqlite3BtreeLast(BtCursor *pCur, int *pRes){
 */
 u32 sqlite3BtreeLastPage(Btree *p){
   LOG("done",0);
-  return p->pBt->env->me_metas[p->curr_txn->mt_toggle]->mm_last_pg;
+  return p->curr_txn->mt_next_pgno-1;
 }
 
 #ifndef SQLITE_OMIT_SHARED_CACHE
