@@ -1120,7 +1120,7 @@ int sqlite3BtreeInsert(
   char aSpace[150], *pFree = 0;
   int rc, res, flag;
 
-  if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
+  if ((mc->mc_db->md_flags & MDB_INTEGERKEY) || !pKey) {
     key[0].mv_data = &nKey;
 	key[0].mv_size = sizeof(i64);
 	data.mv_data = (void *)pData;
@@ -1339,7 +1339,7 @@ int sqlite3BtreeMovetoUnpacked(
 	goto done;
   }
 
-  if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
+  if ((mc->mc_db->md_flags & MDB_INTEGERKEY) || !pUnKey) {
     key[0].mv_data = &intKey;
 	key[0].mv_size = sizeof(i64);
 	ret = mdb_cursor_get(mc, key, NULL, MDB_SET);
