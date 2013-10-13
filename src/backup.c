@@ -40,18 +40,21 @@ sqlite3_backup *sqlite3_backup_init(
   sqlite3* pSrcDb,                      /* Database connection to read from */
   const char *zSrcDb                    /* Name of database within pSrcDb */
 ){
+  return 0;
 }
 
 /*
 ** Copy nPage pages from the source b-tree to the destination.
 */
 int sqlite3_backup_step(sqlite3_backup *p, int nPage){
+  return 0;
 }
 
 /*
 ** Release all resources associated with an sqlite3_backup* handle.
 */
 int sqlite3_backup_finish(sqlite3_backup *p){
+  return 0;
 }
 
 /*

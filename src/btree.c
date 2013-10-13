@@ -198,7 +198,7 @@ int sqlite3BtreePutData(BtCursor *pCsr, u32 offset, u32 amt, void *z){
   if (F_ISSET(node->mn_flags, F_BIGDATA)) {
     MDB_val ndata;
 	MDB_page *mp = (MDB_page *)((char *)data.mv_data - PAGEHDRSZ);
-	if (!mp->mp_flags & P_DIRTY) {
+	if (!(mp->mp_flags & P_DIRTY)) {
 		ndata.mv_data = sqlite3_malloc(data.mv_size);
 		if(!ndata.mv_data)
 		  return SQLITE_NOMEM;
@@ -212,7 +212,7 @@ int sqlite3BtreePutData(BtCursor *pCsr, u32 offset, u32 amt, void *z){
 		memcpy((char *)data.mv_data+offset, z, amt);
 	}
   } else {
-	memcpy(NODEDATA(node)+offset, z, amt);
+	memcpy((char *)NODEDATA(node)+offset, z, amt);
   }
   return SQLITE_OK;
 }
@@ -1815,7 +1815,7 @@ void sqlite3BtreeCursorHints(BtCursor *pCsr, unsigned int mask) {
 ** words, return TRUE if no sync() occurs on the disk files.
 */
 int sqlite3BtreeSyncDisabled(Btree *p){
-  int flags;
+  unsigned int flags;
   LOG("done",0);
   mdb_env_get_flags(p->pBt->env, &flags);
   return (flags & MDB_NOSYNC) != 0;
