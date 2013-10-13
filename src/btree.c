@@ -1,5 +1,7 @@
 #include "btreeInt.h"
 #include "vdbeInt.h"
+#define MDB_MAXKEYSIZE	2000
+#define MDB_USE_HASH	1
 #include "mdb.c"
 #include "midl.c"
 
@@ -49,16 +51,26 @@ static int errmap(int err)
   case ENOENT:
     return SQLITE_CANTOPEN;
   case ENOSPC:
+  case MDB_MAP_FULL:
     return SQLITE_FULL;
   case MDB_NOTFOUND:
     return SQLITE_NOTFOUND;
   case MDB_VERSION_MISMATCH:
+  case MDB_INVALID:
     return SQLITE_NOTADB;
   case MDB_PAGE_NOTFOUND:
   case MDB_CORRUPTED:
-    return SQLITE_INTERNAL;
+    return SQLITE_CORRUPT;
+  case MDB_INCOMPATIBLE:
+    return SQLITE_SCHEMA;
+  case MDB_BAD_RSLOT:
+    return SQLITE_MISUSE;
+  case MDB_BAD_TXN:
+    return SQLITE_ABORT;
+  case MDB_BAD_VALSIZE:
+    return SQLITE_TOOBIG;
   default:
-    return SQLITE_ERROR;
+    return SQLITE_INTERNAL;
   }
 }
 
@@ -1010,6 +1022,68 @@ static int joinIndexKey(MDB_node *node, BtCursor *pCur)
 	return SQLITE_OK;
 }
 
+static void squashIndexKey(UnpackedRecord *pun, int file_format, MDB_val *key)
+{
+	int i, changed = 0;
+	u32 serial_type;
+	Mem *pMem;
+	MDB_val v;
+	mdb_hash_t h;
+
+	/* Look for any large strings or blobs */
+	pMem = pun->aMem;
+	for (i=0; i<pun->nField; i++) {
+		serial_type = sqlite3VdbeSerialType(pMem, file_format);
+		if (serial_type >= 12 && pMem->n >72) {
+			v.mv_data = (char *)pMem->z + 64;
+			v.mv_size = pMem->n - 64;
+			h = mdb_hash_val(&v, MDB_HASH_INIT);
+			pMem->n = 72;
+			memcpy(v.mv_data, &h, sizeof(h));
+			changed = 1;
+		}
+		pMem++;
+	}
+
+	/* If we changed anything and the key was provided, rewrite the key */
+	if (changed && key) {
+		u8 *zNewRecord;
+		int nHdr = 0;
+		int nData = 0;
+		int nByte;
+		int nVarint;
+		int len;
+
+		/* Loop thru and find out how much space is needed */
+		pMem = pun->aMem;
+		for (i=0; i<pun->nField; i++) {
+			serial_type = sqlite3VdbeSerialType(pMem, file_format);
+			len = sqlite3VdbeSerialTypeLen(serial_type);
+			nData += len;
+			nHdr += sqlite3VarintLen(serial_type);
+			pMem++;
+		}
+		nHdr += nVarint = sqlite3VarintLen(nHdr);
+		if (nVarint < sqlite3VarintLen(nHdr))
+			nHdr++;
+		nByte = nHdr+nData;
+		zNewRecord = key->mv_data;
+		len = putVarint32(zNewRecord, nHdr);
+		pMem = pun->aMem;
+		for (i=0; i<pun->nField; i++) {
+			serial_type = sqlite3VdbeSerialType(pMem, file_format);
+			len += putVarint32(&zNewRecord[len], serial_type);
+			pMem++;
+		}
+		pMem = pun->aMem;
+		for (i=0; i<pun->nField; i++) {
+			len += sqlite3VdbeSerialPut(&zNewRecord[len], (int)(nByte-len), pMem, file_format);
+			pMem++;
+		}
+		key->mv_size = len;
+	}
+}
+
 /*
 ** Insert a new record into the BTree.  The key is given by (pKey,nKey)
 ** and the data is given by (pData,nData).  The cursor is used only to
@@ -1064,6 +1138,7 @@ int sqlite3BtreeInsert(
 	  (int)nKey, pKey, p);
 	key[1].mv_data = p;
 	flag = MDB_NODUPDATA;
+	squashIndexKey(p, pCur->pBtree->db->pVdbe->minWriteFileFormat, key);
   }
   rc = mdb_cursor_put(mc, key, &data, flag);
   if (pFree)
@@ -1269,16 +1344,17 @@ int sqlite3BtreeMovetoUnpacked(
 	key[0].mv_size = sizeof(i64);
 	ret = mdb_cursor_get(mc, key, NULL, MDB_SET);
   } else {
+	int file_format =
+			pCur->pBtree->db->pVdbe->minWriteFileFormat;
     key[0].mv_size = 1;
 	key[0].mv_data = NULL;
 	key[1].mv_size = 0;
 	key[1].mv_data = pUnKey;
+	squashIndexKey(pUnKey, file_format, NULL);
     /* Put the rowID into the data, not the key */
 	if (pUnKey->nField > pCur->pKeyInfo->nField) {
 	  u8 serial_type;
 	  Mem *rowid = &pUnKey->aMem[pUnKey->nField - 1];
-	  int file_format =
-			pCur->pBtree->db->pVdbe->minWriteFileFormat;
 	  serial_type = sqlite3VdbeSerialType(rowid, file_format);
 	  data.mv_size =
 			sqlite3VdbeSerialTypeLen(serial_type) + 1;
