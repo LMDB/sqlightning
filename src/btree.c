@@ -1118,14 +1118,13 @@ int sqlite3BtreeInsert(
   UnpackedRecord *p;
   MDB_val key[2], data;
   char aSpace[150], *pFree = 0;
-  int rc, res, flag;
+  int rc, res, flag = 0;
 
   if ((mc->mc_db->md_flags & MDB_INTEGERKEY) || !pKey) {
     key[0].mv_data = &nKey;
 	key[0].mv_size = sizeof(i64);
 	data.mv_data = (void *)pData;
 	data.mv_size = nData + nZero;
-	flag = 0;
   } else {
 	p = sqlite3VdbeAllocUnpackedRecord(
 		pCur->pKeyInfo, aSpace, sizeof(aSpace), &pFree);
@@ -1137,7 +1136,7 @@ int sqlite3BtreeInsert(
 	sqlite3VdbeRecordUnpack(pCur->pKeyInfo,
 	  (int)nKey, pKey, p);
 	key[1].mv_data = p;
-	flag = MDB_NODUPDATA;
+	/* flag = MDB_NODUPDATA; */
 	squashIndexKey(p, pCur->pBtree->db->pVdbe->minWriteFileFormat, key);
   }
   rc = mdb_cursor_put(mc, key, &data, flag);
