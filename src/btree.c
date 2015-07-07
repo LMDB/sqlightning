@@ -689,7 +689,7 @@ int sqlite3BtreeData(BtCursor *pCur, u32 offset, u32 amt, void *pBuf){
   return rc;
 }
 
-static int joinIndexKey(MDB_node *node, BtCursor *pCur);
+static int joinIndexKey(MDB_val *key, MDB_val *data, BtCursor *pCur, u_int32_t amt);
 
 /*
 ** For the entry that cursor pCur is point to, return as
@@ -704,12 +704,24 @@ const void *sqlite3BtreeKeyFetch(BtCursor *pCur, int *pAmt){
   LOG("done",0);
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
-	if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
 	  *pAmt = NODEKSZ(node);
+	if (mc->mc_db->md_flags & MDB_INTEGERKEY) {
 	  return NODEKEY(node);
 	} else {
-	  *pAmt = NODEKSZ(node) + NODEDSZ(node);
-	  joinIndexKey(node, pCur);
+	  MDB_val key, data;
+	  key.mv_size = NODEKSZ(node);
+	  key.mv_data = NODEKEY(node);
+	  if (F_ISSET(node->mn_flags, F_DUPDATA)) {
+		MDB_cursor *xc = &mc->mc_xcursor->mx_cursor;
+		node = NODEPTR(xc->mc_pg[xc->mc_top], xc->mc_ki[xc->mc_top]);
+		data.mv_size = NODEKSZ(node);
+		data.mv_data = NODEKEY(node);
+	  } else {
+		data.mv_size = NODEDSZ(node);
+		data.mv_data = NODEDATA(node);
+	  }
+	  *pAmt += data.mv_size;
+	  joinIndexKey(&key, &data, pCur, *pAmt);
 	  return pCur->index.mv_data;
 	}
   } else {
@@ -996,15 +1008,13 @@ static void splitIndexKey(MDB_val *key, MDB_val *data)
 	data->mv_data = &aKey[key->mv_size];
 }
 
-static int joinIndexKey(MDB_node *node, BtCursor *pCur)
+static int joinIndexKey(MDB_val *key, MDB_val *data, BtCursor *pCur, u_int32_t amount)
 {
 	u32 hdrSize;
-	u_int32_t amount;
-	unsigned char *aKey = (unsigned char *)NODEKEY(node);
-	unsigned char *aData = (unsigned char *)NODEDATA(node);
+	unsigned char *aKey = (unsigned char *)key->mv_data;
+	unsigned char *aData = (unsigned char *)data->mv_data;
 	unsigned char *newKey;
 
-	amount = NODEKSZ(node) + NODEDSZ(node);
 	if (pCur->index.mv_size < amount) {
 	  sqlite3_free(pCur->index.mv_data);
 	  pCur->index.mv_data = sqlite3_malloc(amount*2);
@@ -1015,8 +1025,8 @@ static int joinIndexKey(MDB_node *node, BtCursor *pCur)
 	newKey = (unsigned char *)pCur->index.mv_data;
 	getVarint32(aKey, hdrSize);
 	memcpy(newKey, aKey, hdrSize);
-	memcpy(&newKey[hdrSize+1], &aKey[hdrSize], NODEKSZ(node) - hdrSize);
-	memcpy(&newKey[NODEKSZ(node)+1], &aData[1], NODEDSZ(node) - 1);
+	memcpy(&newKey[hdrSize+1], &aKey[hdrSize], key->mv_size - hdrSize);
+	memcpy(&newKey[key->mv_size+1], &aData[1], data->mv_size - 1);
 	newKey[hdrSize] = aData[0];
 	putVarint32(newKey, hdrSize+1);
 	return SQLITE_OK;
