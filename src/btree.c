@@ -136,7 +136,7 @@ int sqlite3BtreeBeginStmt(Btree *p, int iStatement){
 **      sqlite3BtreeUpdateMeta()
 */
 int sqlite3BtreeBeginTrans(Btree *p, int wrflag){
-  MDB_txn *txn;
+  MDB_txn *txn, *rtxn = NULL;
   BtShared *pBt = p->pBt;
   int rc = SQLITE_OK;
 
@@ -144,10 +144,30 @@ int sqlite3BtreeBeginTrans(Btree *p, int wrflag){
 	(p->inTrans == TRANS_READ && !wrflag))
 	goto done;
 
+  /* If we already started a read txn and now want to write,
+   * we need to cleanup the read txn
+   */
+  if (p->inTrans == TRANS_READ && wrflag)
+	rtxn = p->main_txn;
+
   rc = mdb_txn_begin(pBt->env, NULL, wrflag ? 0 : MDB_RDONLY, &txn);
   if (rc == 0) {
 	if (wrflag) {
 	  p->inTrans = TRANS_WRITE;
+	  if (rtxn) {
+		MDB_val key, data;
+		BtCursor *pCur;
+		int rc2;
+		/* move all existing cursors to new transaction */
+		for (pCur = p->pCursor; pCur; pCur = pCur->pNext) {
+		  MDB_cursor *mc = (MDB_cursor *)(pCur+1);
+		  rc2 = mdb_cursor_get(mc, &key, &data, MDB_CURRENT);
+		  mdb_cursor_init(mc, txn, mc->mc_dbi, (MDB_xcursor *)(mc+1));
+		  if (!rc2)
+			  mdb_cursor_set(mc, &key, &data, MDB_GET_BOTH, &rc2);
+		}
+		mdb_txn_abort(rtxn);
+	  }
 	} else {
 	  p->inTrans = TRANS_READ;
 	}
