@@ -1,7 +1,9 @@
 #include "btreeInt.h"
 #include "vdbeInt.h"
 #define MDB_MAXKEYSIZE	2000
-#define MDB_USE_HASH	1
+#ifndef _WIN32
+#define MDB_USE_POSIX_SEM  1
+#endif
 #include "mdb.c"
 #include "midl.c"
 
@@ -31,6 +33,8 @@ MDB_env *g_tmp_env;
 #ifndef SQLITE_DEFAULT_PROXYDIR_PERMISSIONS
 #define SQLITE_DEFAULT_PROXYDIR_PERMISSIONS	0755
 #endif
+
+#define LOCKSUFF ".lock"
 
 #define	BT_MAX_PATH	512
 
@@ -211,7 +215,7 @@ int sqlite3BtreePutData(BtCursor *pCsr, u32 offset, u32 amt, void *z){
 	return errmap(rc);
 
   node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
-  mdb_node_read(mc->mc_txn, node, &data);
+  mdb_node_read(mc, node, &data);
   if (data.mv_size < offset+amt)
   	return SQLITE_CORRUPT_BKPT;
 
@@ -699,7 +703,7 @@ int sqlite3BtreeData(BtCursor *pCur, u32 offset, u32 amt, void *pBuf){
   MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
   int rc = SQLITE_OK;
   
-  mdb_node_read(mc->mc_txn, node, &data);
+  mdb_node_read(mc, node, &data);
   if (offset+amt <= data.mv_size) {
     memcpy(pBuf, (char *)data.mv_data+offset, amt);
   } else {
@@ -759,7 +763,7 @@ const void *sqlite3BtreeDataFetch(BtCursor *pCur, int *pAmt){
   }
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
-    mdb_node_read(mc->mc_txn, node, &data);
+    mdb_node_read(mc, node, &data);
 	*pAmt = data.mv_size;
 	return data.mv_data;
   } else {
@@ -784,7 +788,7 @@ int sqlite3BtreeDataSize(BtCursor *pCur, u32 *pSize){
   MDB_val data;
   if(mc->mc_flags & C_INITIALIZED) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
-    mdb_node_read(mc->mc_txn, node, &data);
+    mdb_node_read(mc, node, &data);
 	*pSize = data.mv_size;
   }
   LOG("done",0);
@@ -1067,7 +1071,7 @@ static void squashIndexKey(UnpackedRecord *pun, int file_format, MDB_val *key)
 		if (serial_type >= 12 && pMem->n >72) {
 			v.mv_data = (char *)pMem->z + 64;
 			v.mv_size = pMem->n - 64;
-			h = mdb_hash_val(&v, MDB_HASH_INIT);
+			h = mdb_hash(v.mv_data, v.mv_size);
 			pMem->n = 72;
 			memcpy(v.mv_data, &h, sizeof(h));
 			changed = 1;
@@ -1174,7 +1178,7 @@ int sqlite3BtreeInsert(
     sqlite3DbFree(pCur->pKeyInfo->db, pFree);
   else if (nZero && rc == 0) {
 	MDB_node *node = NODEPTR(mc->mc_pg[mc->mc_top], mc->mc_ki[mc->mc_top]);
-	mdb_node_read(mc->mc_txn, node, &data);
+	mdb_node_read(mc, node, &data);
 	memset((char *)data.mv_data+nData, 0, nZero);
   }
   LOG("rc=%d",rc);
