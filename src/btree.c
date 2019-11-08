@@ -34,7 +34,7 @@ MDB_env *g_tmp_env;
 #define SQLITE_DEFAULT_PROXYDIR_PERMISSIONS	0755
 #endif
 
-#define LOCKSUFF ".lock"
+#define LOCKSUFF "-lock"
 
 #define	BT_MAX_PATH	512
 
